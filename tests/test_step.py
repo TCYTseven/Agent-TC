@@ -83,6 +83,26 @@ class TestStep(unittest.TestCase):
         )
         self.assertEqual(images, 2)
 
+    def test_direct_coordinates_skip_grounding(self):
+        params = {"engine_type": "openai", "model": "gpt-4o", "api_key": "x"}
+        ground = dict(params, grounding_width=1000, grounding_height=500)
+        aci = OSWorldACI(
+            None, "linux", params, ground, width=2000, height=1000, direct_coords=True
+        )
+        aci.grounding_model.engine = FakeEngine(["(1, 1)"])
+        agent = AgentS3(params, aci, platform="linux")
+        self.assertIn("@(x, y)", agent.executor.generator_agent.system_prompt)
+        agent.executor.generator_agent.engine = FakeEngine(
+            ['```python\nagent.click("The OK button @(250, 100)", 1, "left")\n```']
+        )
+        _, actions = agent.predict("press ok", {"screenshot": screenshot()})
+        self.assertEqual(aci.grounding_model.engine.calls, 0)
+        self.assertIn("pyautogui.click(500, 200", actions[0])
+        # A description without coordinates still falls back to grounding
+        agent.executor.generator_agent.engine = FakeEngine([CLICK])
+        agent.predict("press ok", {"screenshot": screenshot()})
+        self.assertEqual(aci.grounding_model.engine.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

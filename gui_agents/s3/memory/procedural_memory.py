@@ -116,6 +116,14 @@ class PROCEDURAL_MEMORY:
 
         return procedural_memory.strip()
 
+    DIRECT_COORDS_NOTE = textwrap.dedent("""
+
+    # Coordinates
+    The screenshot is {width}x{height} pixels. End every element description you pass to an action with the pixel coordinates of that element's center, written as @(x, y). For example:
+    agent.click("The blue Submit button below the form @(812, 604)", 1, "left")
+    agent.drag_and_drop("The file report.pdf on the desktop @(120, 340)", "The Trash icon in the dock @(1210, 1050)")
+    """)
+
     # For reflection agent, post-action verification mainly for cycle detection
     REFLECTION_ON_TRAJECTORY = textwrap.dedent("""
     You are an expert computer use agent designed to reflect on the trajectory of a task and provide feedback on what has happened so far.

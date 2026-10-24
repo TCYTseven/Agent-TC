@@ -88,6 +88,15 @@ class Worker(BaseModule):
         sys_prompt = PROCEDURAL_MEMORY.construct_simple_worker_procedural_memory(
             type(self.grounding_agent), skipped_actions=skipped_actions
         ).replace("CURRENT_OS", self.platform)
+        if getattr(self.grounding_agent, "direct_coords", False):
+            sys_prompt += PROCEDURAL_MEMORY.DIRECT_COORDS_NOTE.format(
+                width=self.grounding_agent.engine_params_for_grounding[
+                    "grounding_width"
+                ],
+                height=self.grounding_agent.engine_params_for_grounding[
+                    "grounding_height"
+                ],
+            )
 
         self.generator_agent = self._create_agent(sys_prompt)
         self.reflection_agent = (

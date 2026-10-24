@@ -300,6 +300,9 @@ def main():
         engine_params_for_grounding=ground_params,
         width=screen_width,
         height=screen_height,
+        # Without a grounding model the planner, which already sees the same
+        # image, writes the coordinates itself: one model call per click.
+        direct_coords=not args.ground_provider,
     )
     agent = AgentS3(
         engine_params,

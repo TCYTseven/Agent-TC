@@ -180,6 +180,9 @@ set_cell_values(new_cell_values={cell_values}, app_name="{app_name}", sheet_name
 """
 
 
+DIRECT_COORDS = re.compile(r"@\s*\(\s*(\d{1,5})\s*,\s*(\d{1,5})\s*\)\s*$")
+
+
 @lru_cache(maxsize=8)
 def ocr_elements(image_bytes: bytes) -> Tuple[str, List]:
     """Word-level OCR boxes for a screenshot, computed once per screenshot."""
@@ -222,6 +225,7 @@ class OSWorldACI(ACI):
         code_agent_budget: int = 20,
         code_agent_engine_params: Dict = None,
         grounding_max_tokens: Optional[int] = None,
+        direct_coords: bool = False,
     ):
         super().__init__()
 
@@ -251,6 +255,9 @@ class OSWorldACI(ACI):
             "Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
         )
         self._coord_cache: Dict = {}
+        # The planner may append "@(x, y)" to a description: pixel coordinates
+        # in the grounding resolution, which skip the grounding call entirely.
+        self.direct_coords = direct_coords
         self._ocr_lock = threading.Lock()
 
         # Configure text grounding agent
@@ -273,6 +280,9 @@ class OSWorldACI(ACI):
         """Ask the grounding model for the (x, y) of the described element.
         Answers are memoised per screenshot, so grounding the same element twice
         (a retried step, a repeated description) costs nothing."""
+        direct = DIRECT_COORDS.search(ref_expr)
+        if direct:
+            return [int(direct.group(1)), int(direct.group(2))]
         key = (ref_expr, hash(to_bytes(obs["screenshot"])))
         if key in self._coord_cache:
             return self._coord_cache[key]
