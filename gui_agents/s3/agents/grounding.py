@@ -242,6 +242,12 @@ class OSWorldACI(ACI):
         self.grounding_model = LMMAgent(engine_params_for_grounding)
         self.engine_params_for_grounding = engine_params_for_grounding
         self.grounding_max_tokens = grounding_max_tokens
+        # UI-TARS was trained on this exact prompt; a general model grounding
+        # its own screenshot gets one that names the image size instead.
+        self.grounding_prompt = engine_params_for_grounding.get(
+            "grounding_prompt",
+            "Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
+        )
         self._coord_cache: Dict = {}
 
         # Configure text grounding agent
@@ -272,7 +278,9 @@ class OSWorldACI(ACI):
         )  # one per call: thread-safe
         agent.image_max_side = self.grounding_model.image_max_side
         agent.add_message(
-            text_content=f"Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
+            text_content=self.grounding_prompt.format(
+                ref_expr=ref_expr, **self.engine_params_for_grounding
+            ),
             image_content=obs["screenshot"],
             put_text_last=True,
         )

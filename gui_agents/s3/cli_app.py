@@ -24,6 +24,11 @@ pyautogui.PAUSE = 0.02
 
 paused = False
 
+GENERAL_GROUNDING_PROMPT = (
+    "The screenshot is {grounding_width}x{grounding_height} pixels. Find this "
+    "element: {ref_expr}\nReply with only its center as pixel coordinates (x, y)."
+)
+
 
 def get_char():
     """Read one key without Enter."""
@@ -257,6 +262,7 @@ def main():
             thinking=False,
             grounding_width=ground_w,
             grounding_height=ground_h,
+            grounding_prompt=GENERAL_GROUNDING_PROMPT,
         )
         print(f"Grounding with {args.model} at {ground_w}x{ground_h}.")
 
