@@ -1,5 +1,7 @@
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -176,6 +178,35 @@ set_cell_values(new_cell_values={cell_values}, app_name="{app_name}", sheet_name
 """
 
 
+@lru_cache(maxsize=8)
+def ocr_elements(image_bytes: bytes) -> Tuple[str, List]:
+    """Word-level OCR boxes for a screenshot, computed once per screenshot."""
+    image = Image.open(BytesIO(image_bytes))
+    data = pytesseract.image_to_data(image, output_type=Output.DICT)
+    elements, table = [], ["Text Table:\nWord id\tText"]
+    words_in_block = defaultdict(int)
+    for i, word in enumerate(data["text"]):
+        word = re.sub(r"^[^a-zA-Z\s.,!?;:\-\+]+|[^a-zA-Z\s.,!?;:\-\+]+$", "", word)
+        if not word:
+            continue
+        block = data["block_num"][i]
+        words_in_block[block] += 1
+        table.append(f"{len(elements)}\t{word}")
+        elements.append(
+            {
+                "id": len(elements),
+                "text": word,
+                "group_num": block,
+                "word_num": words_in_block[block],
+                "left": data["left"][i],
+                "top": data["top"][i],
+                "width": data["width"][i],
+                "height": data["height"][i],
+            }
+        )
+    return "\n".join(table) + "\n", elements
+
+
 # ACI primitives are parameterized by description, and coordinate generation uses a pretrained grounding model
 class OSWorldACI(ACI):
     def __init__(
@@ -188,6 +219,7 @@ class OSWorldACI(ACI):
         height: int = 1080,
         code_agent_budget: int = 20,
         code_agent_engine_params: Dict = None,
+        grounding_max_tokens: int = 32,
     ):
         super().__init__()
 
@@ -209,6 +241,8 @@ class OSWorldACI(ACI):
         # Configure the visual grounding model responsible for coordinate generation
         self.grounding_model = LMMAgent(engine_params_for_grounding)
         self.engine_params_for_grounding = engine_params_for_grounding
+        self.grounding_max_tokens = grounding_max_tokens
+        self._coord_cache: Dict = {}
 
         # Configure text grounding agent
         self.text_span_agent = LMMAgent(
@@ -226,68 +260,42 @@ class OSWorldACI(ACI):
         self.current_task_instruction = None
         self.last_code_agent_result = None
 
-    # Given the state and worker's referring expression, use the grounding model to generate (x,y)
     def generate_coords(self, ref_expr: str, obs: Dict) -> List[int]:
-
-        # Reset the grounding model state
-        self.grounding_model.reset()
-
-        # Configure the context, UI-TARS demo does not use system prompt
-        prompt = f"Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n"
-        self.grounding_model.add_message(
-            text_content=prompt, image_content=obs["screenshot"], put_text_last=True
+        """Ask the grounding model for the (x, y) of the described element.
+        Answers are memoised per screenshot, so grounding the same element twice
+        (a retried step, a repeated description) costs nothing."""
+        key = (ref_expr, hash(obs["screenshot"]))
+        if key in self._coord_cache:
+            return self._coord_cache[key]
+        agent = LMMAgent(
+            engine=self.grounding_model.engine
+        )  # one per call: thread-safe
+        agent.image_max_side = self.grounding_model.image_max_side
+        agent.add_message(
+            text_content=f"Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
+            image_content=obs["screenshot"],
+            put_text_last=True,
         )
+        response = call_llm_safe(agent, max_new_tokens=self.grounding_max_tokens)
+        logger.debug("GROUNDING RESPONSE: %s", response)
+        numbers = re.findall(r"\d+", response)
+        assert len(numbers) >= 2, f"No coordinate in grounding response: {response!r}"
+        coords = [int(numbers[0]), int(numbers[1])]
+        if len(self._coord_cache) > 64:
+            self._coord_cache.clear()
+        self._coord_cache[key] = coords
+        return coords
 
-        # Generate and parse coordinates
-        response = call_llm_safe(self.grounding_model)
-        print("RAW GROUNDING MODEL RESPONSE:", response)
-        numericals = re.findall(r"\d+", response)
-        assert len(numericals) >= 2
-        return [int(numericals[0]), int(numericals[1])]
-
-    # Calls pytesseract to generate word level bounding boxes for text grounding
-    def get_ocr_elements(self, b64_image_data: str) -> Tuple[str, List]:
-        image = Image.open(BytesIO(b64_image_data))
-        image_data = pytesseract.image_to_data(image, output_type=Output.DICT)
-
-        # Clean text by removing leading and trailing spaces and non-alphabetical characters, but keeping punctuation
-        for i, word in enumerate(image_data["text"]):
-            image_data["text"][i] = re.sub(
-                r"^[^a-zA-Z\s.,!?;:\-\+]+|[^a-zA-Z\s.,!?;:\-\+]+$", "", word
-            )
-
-        ocr_elements = []
-        ocr_table = "Text Table:\nWord id\tText\n"
-        # Obtain the <id, text, group number, word number> for each valid element
-        grouping_map = defaultdict(list)
-        ocr_id = 0
-        for i in range(len(image_data["text"])):
-            block_num = image_data["block_num"][i]
-            if image_data["text"][i]:
-                grouping_map[block_num].append(image_data["text"][i])
-                ocr_table += f"{ocr_id}\t{image_data['text'][i]}\n"
-                ocr_elements.append(
-                    {
-                        "id": ocr_id,
-                        "text": image_data["text"][i],
-                        "group_num": block_num,
-                        "word_num": len(grouping_map[block_num]),
-                        "left": image_data["left"][i],
-                        "top": image_data["top"][i],
-                        "width": image_data["width"][i],
-                        "height": image_data["height"][i],
-                    }
-                )
-                ocr_id += 1
-
-        return ocr_table, ocr_elements
+    def generate_coords_many(self, ref_exprs: List[str], obs: Dict) -> List[List[int]]:
+        """Ground several descriptions concurrently (one round trip of latency)."""
+        with ThreadPoolExecutor(len(ref_exprs)) as pool:
+            return list(pool.map(lambda r: self.generate_coords(r, obs), ref_exprs))
 
     # Given the state and worker's text phrase, generate the coords of the first/last word in the phrase
     def generate_text_coords(
         self, phrase: str, obs: Dict, alignment: str = ""
     ) -> List[int]:
-
-        ocr_table, ocr_elements = self.get_ocr_elements(obs["screenshot"])
+        ocr_table, elements = ocr_elements(obs["screenshot"])
 
         alignment_prompt = ""
         if alignment == "start":
@@ -295,24 +303,18 @@ class OSWorldACI(ACI):
         elif alignment == "end":
             alignment_prompt = "**Important**: Output the word id of the LAST word in the provided phrase.\n"
 
-        # Load LLM prompt
-        self.text_span_agent.reset()
-        self.text_span_agent.add_message(
+        agent = LMMAgent(
+            engine=self.text_span_agent.engine,
+            system_prompt=self.text_span_agent.system_prompt,
+        )
+        agent.add_message(
             alignment_prompt + "Phrase: " + phrase + "\n" + ocr_table, role="user"
         )
-        self.text_span_agent.add_message(
-            "Screenshot:\n", image_content=obs["screenshot"], role="user"
-        )
-
-        # Obtain the target element
-        response = call_llm_safe(self.text_span_agent)
-        print("TEXT SPAN AGENT RESPONSE:", response)
-        numericals = re.findall(r"\d+", response)
-        if len(numericals) > 0:
-            text_id = int(numericals[-1])
-        else:
-            text_id = 0
-        elem = ocr_elements[text_id]
+        agent.add_message("Screenshot:\n", image_content=obs["screenshot"], role="user")
+        response = call_llm_safe(agent, max_new_tokens=512)
+        numbers = re.findall(r"\d+", response)
+        text_id = int(numbers[-1]) if numbers else 0
+        elem = elements[min(text_id, len(elements) - 1)]
 
         # Compute the element coordinates
         if alignment == "start":
@@ -425,16 +427,19 @@ class OSWorldACI(ACI):
             overwrite:bool, Assign it to True if the text should overwrite the existing text, otherwise assign it to False. Using this argument clears all text in an element.
             enter:bool, Assign it to True if the enter key should be pressed after typing the text, otherwise assign it to False.
         """
+        # Unicode goes through the clipboard (pyautogui.write is ASCII only)
+        has_unicode = any(ord(char) > 127 for char in text)
         command = "import pyautogui; "
-        command += (
-            "\ntry:\n"
-            "    import pyperclip\n"
-            "except ImportError:\n"
-            "    import subprocess\n"
-            "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
-            "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
-            "    import pyperclip\n\n"
-        )
+        if has_unicode:
+            command += (
+                "\ntry:\n"
+                "    import pyperclip\n"
+                "except ImportError:\n"
+                "    import subprocess\n"
+                "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
+                "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
+                "    import pyperclip\n\n"
+            )
 
         if element_description is not None:
             coords1 = self.generate_coords(element_description, self.obs)
@@ -447,16 +452,13 @@ class OSWorldACI(ACI):
                 "pyautogui.press('backspace'); "
             )
 
-        # Check if text contains Unicode characters that pyautogui.write() can't handle
-        has_unicode = any(ord(char) > 127 for char in text)
-
         if has_unicode:
             # Use clipboard method for Unicode characters
             command += f"pyperclip.copy({repr(text)}); "
             command += f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'v'); "
         else:
             # Use regular pyautogui.write() for ASCII text
-            command += f"pyautogui.write({repr(text)}); "
+            command += f"pyautogui.write({repr(text)}, interval=0); "
 
         if enter:
             command += "pyautogui.press('enter'); "
@@ -481,8 +483,9 @@ class OSWorldACI(ACI):
             ending_description:str, a very detailed description of where to end the drag action. This description should be at least a full sentence.
             hold_keys:List list of keys to hold while dragging
         """
-        coords1 = self.generate_coords(starting_description, self.obs)
-        coords2 = self.generate_coords(ending_description, self.obs)
+        coords1, coords2 = self.generate_coords_many(
+            [starting_description, ending_description], self.obs
+        )
         x1, y1 = self.resize_coordinates(coords1)
         x2, y2 = self.resize_coordinates(coords2)
 
@@ -492,7 +495,7 @@ class OSWorldACI(ACI):
         # TODO: specified duration?
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='left'); pyautogui.mouseUp(); "
+        command += f"pyautogui.dragTo({x2}, {y2}, duration=0.3, button='left'); pyautogui.mouseUp(); "
         for k in hold_keys:
             command += f"pyautogui.keyUp({repr(k)}); "
 
@@ -510,16 +513,18 @@ class OSWorldACI(ACI):
             ending_phrase:str, the phrase that denotes the end of the text span you want to highlight. If you only want to highlight one word, just pass in that single word.
             button:str, the button to use to highlight the text span. Defaults to "left". Can be "left", "right", or "middle".
         """
-        coords1 = self.generate_text_coords(
-            starting_phrase, self.obs, alignment="start"
-        )
-        coords2 = self.generate_text_coords(ending_phrase, self.obs, alignment="end")
+        with ThreadPoolExecutor(2) as pool:
+            start = pool.submit(
+                self.generate_text_coords, starting_phrase, self.obs, "start"
+            )
+            end = pool.submit(self.generate_text_coords, ending_phrase, self.obs, "end")
+            coords1, coords2 = start.result(), end.result()
         x1, y1 = coords1
         x2, y2 = coords2
 
         command = "import pyautogui; "
         command += f"pyautogui.moveTo({x1}, {y1}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='{button}'); pyautogui.mouseUp(); "
+        command += f"pyautogui.dragTo({x2}, {y2}, duration=0.3, button='{button}'); pyautogui.mouseUp(); "
 
         # Return pyautoguicode to drag and drop the elements
         return command
@@ -575,7 +580,6 @@ class OSWorldACI(ACI):
             logger.info(f"Executing FULL TASK: {task_to_execute}")
 
         if task_to_execute:
-            print("obs keys: ", self.obs.keys())
             screenshot = self.obs.get("screenshot", "") if self.obs else ""
             logger.info(f"Screenshot available: {'Yes' if screenshot else 'No'}")
 
@@ -597,10 +601,10 @@ class OSWorldACI(ACI):
             logger.info("=" * 50)
 
             # Return code to be executed in the environment
-            return "import time; time.sleep(2.222)"
+            return "import time; time.sleep(0.5)"
         else:
             logger.warning("No task instruction available for code agent call")
-            return "import time; time.sleep(1.111)"
+            return "import time; time.sleep(0.2)"
 
     @agent_action
     def scroll(self, element_description: str, clicks: int, shift: bool = False):
@@ -614,9 +618,9 @@ class OSWorldACI(ACI):
         x, y = self.resize_coordinates(coords1)
 
         if shift:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.5); pyautogui.hscroll({clicks})"
+            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.1); pyautogui.hscroll({clicks})"
         else:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.5); pyautogui.vscroll({clicks})"
+            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.1); pyautogui.vscroll({clicks})"
 
     @agent_action
     def hotkey(self, keys: List):
