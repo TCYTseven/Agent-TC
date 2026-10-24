@@ -17,6 +17,10 @@ class PROCEDURAL_MEMORY:
 
         # GUIDELINES
 
+""")
+        uses_code_agent = "call_code_agent" not in skipped_actions
+        if uses_code_agent:
+            procedural_memory += textwrap.dedent("""\
         ## Agent Usage Guidelines
         You have access to both GUI and code agents. Choose the appropriate agent based on the task requirements:
 
@@ -60,6 +64,8 @@ class PROCEDURAL_MEMORY:
         - After opening or reopening applications, wait at least 3 seconds for full loading.
         - Don't provide specific row/column numbers to the coding agent; let it infer the spreadsheet structure itself.
 
+        """)
+        procedural_memory += textwrap.dedent("""\
         Never assume a task is done based on appearances-always ensure the specific requested action has been performed and verify the modification. If you haven't executed any actions, the task is not complete.
 
         ### END OF GUIDELINES
