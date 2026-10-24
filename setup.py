@@ -10,7 +10,7 @@ long_description = re.sub(
 
 setup(
     name="gui-agents",
-    version="0.3.2",
+    version="0.4.0",
     description="A library for creating general purpose GUI agents using multimodal LLMs.",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -19,29 +19,20 @@ setup(
     # agent_s4 is a separate distribution (agent_s4/pyproject.toml).
     packages=find_packages(include=["gui_agents", "gui_agents.*"]),
     install_requires=[
-        "numpy",
-        "backoff",
-        "pandas",
-        "openai",
         "anthropic",
-        "fastapi",
-        "uvicorn",
-        "paddleocr",
-        "paddlepaddle",
-        "together",
-        "scikit-learn",
-        "websockets",
-        "tiktoken",
-        "selenium",
-        'pyobjc; platform_system == "Darwin"',
+        "backoff",
+        "mss",
+        "numpy",
+        "openai",
+        "pillow",
         "pyautogui",
-        "toml",
         "pytesseract",
-        "google-genai",
-        'pywinauto; platform_system == "Windows"',  # Only for Windows
-        'pywin32; platform_system == "Windows"',  # Only for Windows
+        'pyobjc; platform_system == "Darwin"',
+        'pywinauto; platform_system == "Windows"',
+        'pywin32; platform_system == "Windows"',
     ],
-    extras_require={"dev": ["black"]},  # Code formatter for linting
+    # bbon (Behavior Best-of-N judging) needs OpenCV
+    extras_require={"dev": ["black"], "bbon": ["opencv-python"]},
     entry_points={
         "console_scripts": [
             "agent_s=gui_agents.s3.cli_app:main",

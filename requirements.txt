@@ -1,23 +1,14 @@
-numpy
-backoff
-pandas
-openai
 anthropic
-fastapi
-uvicorn
-paddleocr
-paddlepaddle
-together
-scikit-learn
-websockets
-tiktoken
+backoff
+mss
+numpy
+openai
+pillow
 pyautogui
-toml
-black
 pytesseract
-google-genai
+black
 
 # Platform-specific dependencies
 pyobjc; platform_system == "Darwin"
 pywinauto; platform_system == "Windows"
-pywin32; platform_system == "Windows" 
+pywin32; platform_system == "Windows"
