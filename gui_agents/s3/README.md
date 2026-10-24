@@ -20,7 +20,7 @@ Agent S3 is the agent in the `gui-agents` package. It takes a natural-language t
 
 On OSWorld, Agent S3 alone reaches 66% in the 100-step setting. With Behavior Best-of-N it reaches 72.6%, above human performance on OSWorld (about 72%). On WindowsAgentArena, accuracy rises from 50.2% with Agent S3 alone to 56.6% when selecting from 3 rollouts; on AndroidWorld, from 68.1% to 71.6%.
 
-These results were measured with reflection on and the original verbose prompt. The `osworld_setup/s3` scripts still turn reflection on; the CLI defaults are tuned for speed (see [Speed](#-speed)).
+These results were measured with reflection on and the original verbose prompt. The `osworld_setup/s3` scripts still turn reflection on, keep extended thinking for the Claude models the paper used, and leave reasoning effort at the API default; the CLI defaults are tuned for speed (see [Speed](#-speed)).
 
 ## 🛠️ Install
 
@@ -68,7 +68,7 @@ agent_s \
     --ground_model ByteDance-Seed/UI-TARS-1.5-7B --grounding_width 1920 --grounding_height 1080
 ```
 
-Grounding dimensions must match your grounding model's output resolution: UI-TARS-1.5-7B uses 1920x1080, UI-TARS-72B uses 1000x1000. Without `--ground_provider` they are worked out for you.
+Grounding dimensions must match your grounding model's output resolution: UI-TARS-1.5-7B uses 1920x1080, UI-TARS-72B uses 1000x1000. Without `--ground_provider` they are worked out for you (for Claude, the screenshot is also kept under the 1.15 megapixels it reads at full size). Some models, Gemini among them, tend to answer in 0-1000 normalised coordinates; with those, use a grounding model.
 
 Ctrl+C pauses the agent; Ctrl+C again quits, Esc resumes.
 
@@ -84,7 +84,7 @@ Ctrl+C pauses the agent; Ctrl+C again quits, Esc resumes.
 | `--max_trajectory_length` | 3 | Screenshots kept in context |
 | `--image_max_side` | 1280 | Longest side of screenshots sent to the main model (0 = full size) |
 | `--reasoning_effort` | `low` | OpenAI reasoning models (gpt-5, o-series) |
-| `--thinking` | off | Anthropic extended thinking: slower, sometimes more accurate |
+| `--thinking` | off | Anthropic extended thinking: slower, sometimes more accurate (`--provider anthropic` only) |
 | `--enable_reflection` | off | A second model call per step that checks the trajectory: slower, catches loops |
 | `--model_temperature` | | Fix the temperature (o3 needs 1.0) |
 | `--enable_local_env` | off | Let the code agent run Python and Bash on this computer |
@@ -109,7 +109,8 @@ Where a step's time goes, and what this version does about each:
 | Screenshots in context | 8 | 3 |
 | API clients | Anthropic client rebuilt on every call | one client per model, reused |
 | Anthropic system prompt | re-read every step | cached |
-| OpenAI reasoning models | default effort | `low` effort |
+| OpenAI reasoning models | default effort | `low` effort in the CLI |
+| Failed requests | a 400 retried for 60s, three times over | retried only on rate limits, server errors and dropped connections |
 | Code agent | one extra model call to summarise each run | none |
 
 ## `gui_agents` SDK

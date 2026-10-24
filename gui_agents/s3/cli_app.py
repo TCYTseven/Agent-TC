@@ -95,13 +95,21 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
 def grab_screen(size) -> bytes:
     """Screenshot as JPEG bytes. mss is several times faster than pyautogui's
     screenshot on macOS and Linux; pyautogui is the fallback."""
+    img = None
     try:
         import mss
 
         with mss.mss() as sct:
             shot = sct.grab(sct.monitors[1])
+        # Use it only if it is the whole screen pyautogui clicks on (with a
+        # second monitor the primary one alone is a different shape); retina
+        # captures are 2x, which keeps the shape.
+        w, h = pyautogui.size()
+        if abs(shot.size[0] / shot.size[1] - w / h) < 0.01:
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
     except Exception:
+        pass
+    if img is None:
         img = pyautogui.screenshot()
     if img.size != size:
         img = img.resize(size, Image.BILINEAR)
@@ -217,6 +225,8 @@ def main():
     p.add_argument("--task", help="The task. Omit for an interactive prompt.")
     args = p.parse_args()
 
+    if args.thinking and args.provider != "anthropic":
+        p.error("--thinking is only supported with --provider anthropic")
     setup_logging(args.debug)
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -254,9 +264,19 @@ def main():
         }
     else:
         # Ground with the main model: it answers in pixels of the image it sees.
-        ground_w, ground_h = scale_screen_dimensions(
-            *size, args.image_max_side or max(size)
-        )
+        side = args.image_max_side or max(size)
+        if args.provider == "anthropic":
+            # Claude shrinks images over ~1.15 megapixels before it sees them;
+            # send one already that size so its pixels are ours.
+            side = min(side, int((1_150_000 * max(size) / min(size)) ** 0.5))
+            engine_params["image_max_side"] = side
+        elif args.provider not in ("openai", "azure"):
+            print(
+                "Note: some models answer in 0-1000 normalised coordinates rather "
+                "than pixels; if clicks land off, add a grounding model "
+                "(--ground_provider)."
+            )
+        ground_w, ground_h = scale_screen_dimensions(*size, side)
         ground_params = dict(
             engine_params,
             thinking=False,

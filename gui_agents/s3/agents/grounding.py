@@ -2,6 +2,7 @@ import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+import threading
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,6 +12,7 @@ from pytesseract import Output
 
 from gui_agents.s3.memory.procedural_memory import PROCEDURAL_MEMORY
 from gui_agents.s3.core.mllm import LMMAgent
+from gui_agents.s3.utils.images import to_bytes
 from gui_agents.s3.utils.common_utils import call_llm_safe
 from gui_agents.s3.agents.code_agent import CodeAgent
 import logging
@@ -219,7 +221,7 @@ class OSWorldACI(ACI):
         height: int = 1080,
         code_agent_budget: int = 20,
         code_agent_engine_params: Dict = None,
-        grounding_max_tokens: int = 32,
+        grounding_max_tokens: Optional[int] = None,
     ):
         super().__init__()
 
@@ -249,6 +251,7 @@ class OSWorldACI(ACI):
             "Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
         )
         self._coord_cache: Dict = {}
+        self._ocr_lock = threading.Lock()
 
         # Configure text grounding agent
         self.text_span_agent = LMMAgent(
@@ -270,7 +273,7 @@ class OSWorldACI(ACI):
         """Ask the grounding model for the (x, y) of the described element.
         Answers are memoised per screenshot, so grounding the same element twice
         (a retried step, a repeated description) costs nothing."""
-        key = (ref_expr, hash(obs["screenshot"]))
+        key = (ref_expr, hash(to_bytes(obs["screenshot"])))
         if key in self._coord_cache:
             return self._coord_cache[key]
         agent = LMMAgent(
@@ -303,7 +306,8 @@ class OSWorldACI(ACI):
     def generate_text_coords(
         self, phrase: str, obs: Dict, alignment: str = ""
     ) -> List[int]:
-        ocr_table, elements = ocr_elements(obs["screenshot"])
+        with self._ocr_lock:  # both ends of a highlight share one OCR pass
+            ocr_table, elements = ocr_elements(to_bytes(obs["screenshot"]))
 
         alignment_prompt = ""
         if alignment == "start":
@@ -503,7 +507,7 @@ class OSWorldACI(ACI):
         # TODO: specified duration?
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=0.3, button='left'); pyautogui.mouseUp(); "
+        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='left'); pyautogui.mouseUp(); "
         for k in hold_keys:
             command += f"pyautogui.keyUp({repr(k)}); "
 
@@ -532,7 +536,7 @@ class OSWorldACI(ACI):
 
         command = "import pyautogui; "
         command += f"pyautogui.moveTo({x1}, {y1}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=0.3, button='{button}'); pyautogui.mouseUp(); "
+        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='{button}'); pyautogui.mouseUp(); "
 
         # Return pyautoguicode to drag and drop the elements
         return command

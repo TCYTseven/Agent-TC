@@ -4,12 +4,24 @@ reused, so every call after the first skips the TLS handshake."""
 
 import os
 
+import anthropic
 import backoff
+import openai
 from anthropic import Anthropic
-from openai import APIConnectionError, APIError, AzureOpenAI, OpenAI, RateLimitError
+from openai import AzureOpenAI, OpenAI
 
+# Retry only what can succeed on a second try; a 400 fails the same way again.
 RETRY = backoff.on_exception(
-    backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
+    backoff.expo,
+    (
+        openai.APIConnectionError,
+        openai.RateLimitError,
+        openai.InternalServerError,
+        anthropic.APIConnectionError,
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+    ),
+    max_time=60,
 )
 
 # engine_type -> (api key env var, base url env var, default base url, default api key)
@@ -79,7 +91,7 @@ class LMMEngineOpenAI(LMMEngine):
         api_version=None,
         organization=None,
         azure_endpoint=None,
-        reasoning_effort="low",
+        reasoning_effort=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -132,8 +144,12 @@ class LMMEngineOpenAI(LMMEngine):
         return self.llm_client
 
     def is_reasoning_model(self):
-        return self.engine_type in ("openai", "azure") and self.model.startswith(
-            ("o1", "o3", "o4", "gpt-5")
+        model = self.model
+        return (
+            self.engine_type in ("openai", "azure")
+            and model.startswith(("o1", "o3", "o4", "gpt-5"))
+            and "chat" not in model
+            and not model.startswith(("o1-mini", "o1-preview"))
         )
 
     @RETRY
@@ -142,7 +158,8 @@ class LMMEngineOpenAI(LMMEngine):
         if self.is_reasoning_model():
             # Reasoning tokens count toward the cap, so a cap would cut answers
             # short; low effort is what makes these models fast.
-            kwargs.setdefault("reasoning_effort", self.reasoning_effort)
+            if self.reasoning_effort:
+                kwargs.setdefault("reasoning_effort", self.reasoning_effort)
             if self.temperature is not None:
                 kwargs["temperature"] = self.temperature
         else:
@@ -163,6 +180,8 @@ class LMMEngineOpenAI(LMMEngine):
 
 def _to_anthropic(content):
     """OpenAI-style content parts -> Anthropic content blocks."""
+    if isinstance(content, str):
+        return content
     blocks = []
     for part in content:
         if part.get("type") == "image_url":
@@ -200,10 +219,15 @@ class LMMEngineAnthropic(LMMEngine):
     def _request(self, messages, temperature, max_new_tokens, thinking, **kwargs):
         # The system prompt is long and fixed for a task: cache it so later
         # steps skip re-reading it (lower latency on every step after the first).
+        system_content = messages[0]["content"]
         system = [
             {
                 "type": "text",
-                "text": messages[0]["content"][0]["text"],
+                "text": (
+                    system_content
+                    if isinstance(system_content, str)
+                    else system_content[0]["text"]
+                ),
                 "cache_control": {"type": "ephemeral"},
             }
         ]

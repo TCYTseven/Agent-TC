@@ -49,15 +49,15 @@ Agent S3 here does the same job in fewer, shorter model calls and less waiting:
 
 - **One grounding call per click instead of two.** The format check used to ground an action and then the agent grounded it again to run it; the first answer is now reused, and grounding results are memoised per screenshot.
 - **Reflection is opt-in.** It was a second multimodal call on every step; the planner already checks its previous action. Turn it back on with `--enable_reflection`.
-- **Shorter answers.** The planner writes one sentence per section instead of four paragraphs, and grounding answers are capped at 32 tokens. Output tokens are the slowest part of a call.
+- **Shorter answers.** The planner writes one sentence per section instead of four paragraphs. Output tokens are the slowest part of a call.
 - **Parallel grounding.** A drag grounds both ends at once; highlighting text reads both phrases at once over a single OCR pass.
 - **No fixed 2 second wait per step.** One `--settle` delay (0.5s), and pyautogui's per-call pause drops from 0.1s to 0.02s.
 - **Smaller, faster screenshots.** Captured with `mss`, JPEG-encoded once, sent to the planner at 1280px; 3 kept in context instead of 8.
-- **Reused API clients, Anthropic prompt caching, low reasoning effort** for OpenAI reasoning models.
+- **Reused API clients, Anthropic prompt caching, low reasoning effort** for OpenAI reasoning models in the CLI, and no retrying of requests that can only fail again.
 - **No grounding server needed.** Omit `--ground_provider` and the main model grounds its own screenshot. UI-TARS is still the most accurate option, and everything runs locally through vLLM or Ollama.
 - **Less code.** Agent S1, S2 and S2.5 are gone (they live in git history), the seven engine classes are one, and the install drops PaddleOCR, PaddlePaddle, pandas, scikit-learn and other packages the agent never imported.
 
-The [Agent S3 README](./gui_agents/s3/README.md) has the commands and a per-step before/after table. The OSWorld scripts keep reflection on to match the published runs.
+The [Agent S3 README](./gui_agents/s3/README.md) has the commands and a per-step before/after table. The OSWorld scripts keep reflection and Claude's extended thinking on, and leave reasoning effort at the API default, to match the published runs.
 
 ## 🥳 Updates
 - [x] **2026/10/20**: Released **[Agent S4](./agent_s4/README.md)** and its paper ["Evolving Agent Interfaces"](https://arxiv.org/abs/2610.28601): an autonomous computer-use scientist that evolves the interfaces its agents work through from task experience. With Qwen3.8-27B, Agent S4 sets a new open-source state of the art on OSWorld V2 at **21.3%**, 3.8 times the same model with fixed interfaces and above GPT-5.5 (13.0%) and Claude Opus 4.8 (20.6%) at a fraction of their cost. *(OSWorld V2 is scored as a strict binary pass/fail with no partial credit, so 21.3% reflects benchmark difficulty, not low reliability — see the [Agent S4 README](./agent_s4/README.md) for details.)*

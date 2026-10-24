@@ -23,7 +23,7 @@ Optional engine parameters:
 - `image_max_side`: longest side of images sent to this model; larger screenshots are shrunk to JPEG first.
 - `temperature`: forces a temperature on every call (o3 needs 1.0).
 - `thinking`: Anthropic extended thinking.
-- `reasoning_effort`: OpenAI reasoning models (gpt-5, o-series); defaults to `low`.
+- `reasoning_effort`: OpenAI reasoning models (gpt-5, o-series); unset uses the API default, the CLI sends `low`.
 
 ```python
 from gui_agents.s3.core.mllm import LMMAgent

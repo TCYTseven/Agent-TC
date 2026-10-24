@@ -16,6 +16,14 @@ from gui_agents.s3.utils.common_utils import (
 
 logger = logging.getLogger("desktopenv.agent")
 
+THINKING_BY_DEFAULT = {
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-5-20251101",
+}
+
 # Engines that keep every turn's text and only drop old screenshots
 LONG_CONTEXT = {"anthropic", "openai", "gemini", "azure", "open_router"}
 
@@ -58,8 +66,14 @@ class Worker(BaseModule):
         """
         super().__init__(worker_engine_params, platform)
         self.temperature = worker_engine_params.get("temperature") or 0.0
-        self.use_thinking = bool(worker_engine_params.get("thinking", False))
-        self.max_new_tokens = worker_engine_params.get("max_new_tokens", 1024)
+        # The published OSWorld runs used extended thinking on these Claude
+        # models; the CLI always sets "thinking" explicitly.
+        self.use_thinking = worker_engine_params.get(
+            "thinking", worker_engine_params.get("model", "") in THINKING_BY_DEFAULT
+        ) and hasattr(self._create_agent().engine, "generate_with_thinking")
+        # None leaves the cap to the provider: thinking models count their
+        # reasoning against it, so a small cap returns empty answers.
+        self.max_new_tokens = worker_engine_params.get("max_new_tokens")
         self.grounding_agent = grounding_agent
         self.max_trajectory_length = max_trajectory_length
         self.enable_reflection = enable_reflection
@@ -210,9 +224,9 @@ class Worker(BaseModule):
                 f"\nCurrent Text Buffer = [{','.join(self.grounding_agent.notes)}]\n"
             )
 
-        code_result = getattr(self.grounding_agent, "last_code_agent_result", None)
-        if code_result is not None:
-            message += format_code_agent_result(code_result)
+        previous = getattr(self.grounding_agent, "last_code_agent_result", None)
+        if previous is not None:
+            message += format_code_agent_result(previous)
             self.grounding_agent.last_code_agent_result = None
 
         self.generator_agent.add_message(
@@ -220,6 +234,8 @@ class Worker(BaseModule):
         )
 
         plan, plan_code, exec_code = self._plan_and_ground(obs)
+        # The code agent runs while the action is grounded; report this step's run
+        code_result = getattr(self.grounding_agent, "last_code_agent_result", None)
         if exec_code is None:
             exec_code = self.grounding_agent.wait(1.333)  # skip a turn
         self.worker_history.append(plan)
