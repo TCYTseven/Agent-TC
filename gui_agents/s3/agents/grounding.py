@@ -180,7 +180,60 @@ set_cell_values(new_cell_values={cell_values}, app_name="{app_name}", sheet_name
 """
 
 
-DIRECT_COORDS = re.compile(r"\s*@\s*\(\s*(\d{1,5})\s*,\s*(\d{1,5})\s*\)[\s.,;:!]*$")
+def click_code(x: int, y: int, num_clicks=1, button_type="left", hold_keys=()) -> str:
+    command = "import pyautogui; "
+    for k in hold_keys:
+        command += f"pyautogui.keyDown({repr(k)}); "
+    command += (
+        f"pyautogui.click({x}, {y}, clicks={num_clicks}, button={repr(button_type)}); "
+    )
+    for k in hold_keys:
+        command += f"pyautogui.keyUp({repr(k)}); "
+    return command
+
+
+def type_code(platform: str, xy, text: str, overwrite=False, enter=False) -> str:
+    """Click xy (if given), then type. Unicode goes through the clipboard
+    (pyautogui.write is ASCII only)."""
+    mod = repr("command" if platform == "darwin" else "ctrl")
+    has_unicode = any(ord(char) > 127 for char in text)
+    command = "import pyautogui; "
+    if has_unicode:
+        command += (
+            "\ntry:\n"
+            "    import pyperclip\n"
+            "except ImportError:\n"
+            "    import subprocess\n"
+            "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
+            "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
+            "    import pyperclip\n\n"
+        )
+    if xy is not None:
+        command += f"pyautogui.click({xy[0]}, {xy[1]}); "
+    if overwrite:
+        command += f"pyautogui.hotkey({mod}, 'a'); pyautogui.press('backspace'); "
+    if has_unicode:
+        command += f"pyperclip.copy({repr(text)}); pyautogui.hotkey({mod}, 'v'); "
+    else:
+        command += f"pyautogui.write({repr(text)}, interval=0); "
+    if enter:
+        command += "pyautogui.press('enter'); "
+    return command
+
+
+def scroll_code(x: int, y: int, clicks: int, shift=False) -> str:
+    fn = "hscroll" if shift else "vscroll"
+    return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.1); pyautogui.{fn}({clicks})"
+
+
+def drag_code(x1: int, y1: int, x2: int, y2: int, hold_keys=(), button="left") -> str:
+    command = f"import pyautogui; pyautogui.moveTo({x1}, {y1}); "
+    for k in hold_keys:
+        command += f"pyautogui.keyDown({repr(k)}); "
+    command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button={repr(button)}); pyautogui.mouseUp(); "
+    for k in hold_keys:
+        command += f"pyautogui.keyUp({repr(k)}); "
+    return command
 
 
 @lru_cache(maxsize=8)
@@ -225,7 +278,6 @@ class OSWorldACI(ACI):
         code_agent_budget: int = 20,
         code_agent_engine_params: Dict = None,
         grounding_max_tokens: Optional[int] = None,
-        direct_coords: bool = False,
     ):
         super().__init__()
 
@@ -255,9 +307,6 @@ class OSWorldACI(ACI):
             "Query:{ref_expr}\nOutput only the coordinate of one point in your response.\n",
         )
         self._coord_cache: Dict = {}
-        # The planner may append "@(x, y)" to a description: pixel coordinates
-        # in the grounding resolution, which skip the grounding call entirely.
-        self.direct_coords = direct_coords
         self._ocr_lock = threading.Lock()
 
         # Configure text grounding agent
@@ -280,15 +329,6 @@ class OSWorldACI(ACI):
         """Ask the grounding model for the (x, y) of the described element.
         Answers are memoised per screenshot, so grounding the same element twice
         (a retried step, a repeated description) costs nothing."""
-        direct = DIRECT_COORDS.search(ref_expr) if self.direct_coords else None
-        if direct:
-            w = self.engine_params_for_grounding["grounding_width"]
-            h = self.engine_params_for_grounding["grounding_height"]
-            return [
-                min(max(int(direct.group(1)), 0), w - 1),
-                min(max(int(direct.group(2)), 0), h - 1),
-            ]
-        ref_expr = DIRECT_COORDS.sub("", ref_expr)
         key = (ref_expr, hash(to_bytes(obs["screenshot"])))
         if key in self._coord_cache:
             return self._coord_cache[key]
@@ -324,7 +364,6 @@ class OSWorldACI(ACI):
     ) -> List[int]:
         with self._ocr_lock:  # both ends of a highlight share one OCR pass
             ocr_table, elements = ocr_elements(to_bytes(obs["screenshot"]))
-        phrase = DIRECT_COORDS.sub("", phrase)
 
         alignment_prompt = ""
         if alignment == "start":
@@ -396,16 +435,7 @@ class OSWorldACI(ACI):
         """
         coords1 = self.generate_coords(element_description, self.obs)
         x, y = self.resize_coordinates(coords1)
-        command = "import pyautogui; "
-
-        # TODO: specified duration?
-        for k in hold_keys:
-            command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"""import pyautogui; pyautogui.click({x}, {y}, clicks={num_clicks}, button={repr(button_type)}); """
-        for k in hold_keys:
-            command += f"pyautogui.keyUp({repr(k)}); "
-        # Return pyautoguicode to click on the element
-        return command
+        return click_code(x, y, num_clicks, button_type, hold_keys)
 
     @agent_action
     def switch_applications(self, app_code):
@@ -461,42 +491,11 @@ class OSWorldACI(ACI):
             overwrite:bool, Assign it to True if the text should overwrite the existing text, otherwise assign it to False. Using this argument clears all text in an element.
             enter:bool, Assign it to True if the enter key should be pressed after typing the text, otherwise assign it to False.
         """
-        # Unicode goes through the clipboard (pyautogui.write is ASCII only)
-        has_unicode = any(ord(char) > 127 for char in text)
-        command = "import pyautogui; "
-        if has_unicode:
-            command += (
-                "\ntry:\n"
-                "    import pyperclip\n"
-                "except ImportError:\n"
-                "    import subprocess\n"
-                "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
-                "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
-                "    import pyperclip\n\n"
-            )
-
+        xy = None
         if element_description is not None:
             coords1 = self.generate_coords(element_description, self.obs)
-            x, y = self.resize_coordinates(coords1)
-            command += f"pyautogui.click({x}, {y}); "
-
-        if overwrite:
-            command += (
-                f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'a'); "
-                "pyautogui.press('backspace'); "
-            )
-
-        if has_unicode:
-            # Use clipboard method for Unicode characters
-            command += f"pyperclip.copy({repr(text)}); "
-            command += f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'v'); "
-        else:
-            # Use regular pyautogui.write() for ASCII text
-            command += f"pyautogui.write({repr(text)}, interval=0); "
-
-        if enter:
-            command += "pyautogui.press('enter'); "
-        return command
+            xy = self.resize_coordinates(coords1)
+        return type_code(self.platform, xy, text, overwrite, enter)
 
     @agent_action
     def save_to_knowledge(self, text: List[str]):
@@ -522,20 +521,7 @@ class OSWorldACI(ACI):
         )
         x1, y1 = self.resize_coordinates(coords1)
         x2, y2 = self.resize_coordinates(coords2)
-
-        command = "import pyautogui; "
-
-        command += f"pyautogui.moveTo({x1}, {y1}); "
-        # TODO: specified duration?
-        for k in hold_keys:
-            command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='left'); pyautogui.mouseUp(); "
-        for k in hold_keys:
-            command += f"pyautogui.keyUp({repr(k)}); "
-
-        # Return pyautoguicode to drag and drop the elements
-
-        return command
+        return drag_code(x1, y1, x2, y2, hold_keys)
 
     @agent_action
     def highlight_text_span(
@@ -553,15 +539,7 @@ class OSWorldACI(ACI):
             )
             end = pool.submit(self.generate_text_coords, ending_phrase, self.obs, "end")
             coords1, coords2 = start.result(), end.result()
-        x1, y1 = coords1
-        x2, y2 = coords2
-
-        command = "import pyautogui; "
-        command += f"pyautogui.moveTo({x1}, {y1}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='{button}'); pyautogui.mouseUp(); "
-
-        # Return pyautoguicode to drag and drop the elements
-        return command
+        return drag_code(*coords1, *coords2, button=button)
 
     @agent_action
     def set_cell_values(
@@ -650,11 +628,7 @@ class OSWorldACI(ACI):
         """
         coords1 = self.generate_coords(element_description, self.obs)
         x, y = self.resize_coordinates(coords1)
-
-        if shift:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.1); pyautogui.hscroll({clicks})"
-        else:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.1); pyautogui.vscroll({clicks})"
+        return scroll_code(x, y, clicks, shift)
 
     @agent_action
     def hotkey(self, keys: List):
@@ -703,3 +677,83 @@ class OSWorldACI(ACI):
     def fail(self):
         """End the current task with a failure. Use this when you believe the entire task is impossible to complete."""
         return """FAIL"""
+
+
+class PixelACI(OSWorldACI):
+    """No grounding model. The planner reads the screenshot and writes pixel
+    coordinates into each action; they are scaled to the screen and run with
+    pyautogui. One model call per step, and an action costs a few output
+    tokens instead of a sentence describing the element."""
+
+    # Need OCR plus a second model call, or OSWorld's LibreOffice setup
+    hidden_actions = ("highlight_text_span", "set_cell_values")
+
+    def __init__(
+        self,
+        env,
+        platform: str,
+        engine_params: Dict,
+        width: int,
+        height: int,
+        coord_width: int,
+        coord_height: int,
+        normalized: bool = False,
+        code_agent_budget: int = 20,
+    ):
+        ACI.__init__(self)
+        self.env = env
+        self.platform = platform
+        self.width, self.height = width, height
+        # The size of the screenshot the model sees: its pixels are the
+        # coordinate space. Normalised models answer in 0-1000 on both axes.
+        self.image_width, self.image_height = coord_width, coord_height
+        self.normalized = normalized
+        self.coord_width = 1000 if normalized else coord_width
+        self.coord_height = 1000 if normalized else coord_height
+        self.obs = None
+        self.code_agent = CodeAgent(engine_params, code_agent_budget)
+        self.current_task_instruction = None
+        self.last_code_agent_result = None
+
+    def to_screen(self, x, y) -> List[int]:
+        x = min(max(float(x), 0), self.coord_width - 1)
+        y = min(max(float(y), 0), self.coord_height - 1)
+        return [
+            round(x * self.width / self.coord_width),
+            round(y * self.height / self.coord_height),
+        ]
+
+    @agent_action
+    def click(
+        self,
+        x: int,
+        y: int,
+        num_clicks: int = 1,
+        button_type: str = "left",
+        hold_keys: List = [],
+    ):
+        """Click at (x, y). button_type: "left", "right" or "middle"; hold_keys: keys held while clicking."""
+        return click_code(*self.to_screen(x, y), num_clicks, button_type, hold_keys)
+
+    @agent_action
+    def type(
+        self,
+        text: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        overwrite: bool = False,
+        enter: bool = False,
+    ):
+        """Type text, first clicking (x, y) if given. overwrite clears the field first; enter presses Enter after."""
+        xy = self.to_screen(x, y) if x is not None and y is not None else None
+        return type_code(self.platform, xy, text, overwrite, enter)
+
+    @agent_action
+    def scroll(self, x: int, y: int, clicks: int, shift: bool = False):
+        """Scroll at (x, y): clicks > 0 up, < 0 down; shift scrolls sideways."""
+        return scroll_code(*self.to_screen(x, y), clicks, shift)
+
+    @agent_action
+    def drag_and_drop(self, x1: int, y1: int, x2: int, y2: int, hold_keys: List = []):
+        """Drag from (x1, y1) to (x2, y2). Also selects text: drag from its first character to its last."""
+        return drag_code(*self.to_screen(x1, y1), *self.to_screen(x2, y2), hold_keys)

@@ -1,10 +1,9 @@
-"""First-run setup: pick a provider, a model and how clicks are found, with
-arrow keys, and save it so later runs are one line."""
+"""First-run setup: pick a provider and a model with arrow keys, and save it
+so later runs are one line."""
 
 import getpass
 import json
 import os
-import re
 import sys
 
 CONFIG_PATH = os.path.join(
@@ -181,36 +180,6 @@ def run_setup() -> dict:
             key = ask(f"API key ({key_env}):", secret=True)
             if key:
                 config["model_api_key"] = key
-
-    grounding = select(
-        "How should it find what to click?",
-        [
-            f"The same model  {DIM}fastest, nothing to host{RESET}",
-            f"A UI-TARS grounding server  {DIM}most accurate on busy screens{RESET}",
-        ],
-    )
-    if grounding == 1:
-        servers = ["huggingface", "vllm", "ollama"]
-        config["ground_provider"] = servers[
-            select("Where is it served?", ["Hugging Face endpoint", "vLLM", "Ollama"])
-        ]
-        default_url = {
-            "huggingface": "http://localhost:8080",
-            "vllm": "http://localhost:8000/v1",
-            "ollama": "http://localhost:11434",
-        }[config["ground_provider"]]
-        config["ground_url"] = ask("Grounding server URL:", default_url)
-        config["ground_model"] = ask("Grounding model name:", "ui-tars-1.5-7b")
-        while True:
-            numbers = re.findall(r"\d+", ask("Its coordinate resolution:", "1920x1080"))
-            if len(numbers) == 2:
-                break
-            print("  Two numbers please, like 1920x1080")
-        config["grounding_width"], config["grounding_height"] = map(int, numbers)
-        if config["ground_provider"] == "huggingface" and not os.getenv("HF_TOKEN"):
-            token = ask("Hugging Face token (HF_TOKEN):", secret=True)
-            if token:
-                config["ground_api_key"] = token
 
     config["enable_local_env"] = confirm(
         "Let it run Python and Bash on this computer for data tasks?"

@@ -1,4 +1,5 @@
 import inspect
+import re
 import textwrap
 
 
@@ -9,18 +10,7 @@ class PROCEDURAL_MEMORY:
     FORMATTING_FEEDBACK
     """)
 
-    @staticmethod
-    def construct_simple_worker_procedural_memory(agent_class, skipped_actions):
-        procedural_memory = textwrap.dedent(f"""\
-        You are an expert in graphical user interfaces and Python code. You are responsible for executing the task: `TASK_DESCRIPTION`.
-        You are working in CURRENT_OS.
-
-        # GUIDELINES
-
-""")
-        uses_code_agent = "call_code_agent" not in skipped_actions
-        if uses_code_agent:
-            procedural_memory += textwrap.dedent("""\
+    CODE_AGENT_GUIDELINES = textwrap.dedent("""\
         ## Agent Usage Guidelines
         You have access to both GUI and code agents. Choose the appropriate agent based on the task requirements:
 
@@ -62,6 +52,19 @@ class PROCEDURAL_MEMORY:
         - Don't provide specific row/column numbers to the coding agent; let it infer the spreadsheet structure itself.
 
         """)
+
+    @staticmethod
+    def construct_simple_worker_procedural_memory(agent_class, skipped_actions):
+        procedural_memory = textwrap.dedent(f"""\
+        You are an expert in graphical user interfaces and Python code. You are responsible for executing the task: `TASK_DESCRIPTION`.
+        You are working in CURRENT_OS.
+
+        # GUIDELINES
+
+""")
+        uses_code_agent = "call_code_agent" not in skipped_actions
+        if uses_code_agent:
+            procedural_memory += PROCEDURAL_MEMORY.CODE_AGENT_GUIDELINES
         procedural_memory += textwrap.dedent("""\
         # General Task Guidelines
         - If creating a new sheet with no name specified, use default sheet names (e.g., "Sheet1", "Sheet2", etc.).
@@ -123,13 +126,78 @@ class PROCEDURAL_MEMORY:
 
         return procedural_memory.strip()
 
-    DIRECT_COORDS_NOTE = textwrap.dedent("""
+    # Optional actions and the words in a task that call for them. The rest of
+    # the time they are left out of the prompt: fewer tokens to read per step.
+    OPTIONAL_ACTIONS = {
+        "drag_and_drop": r"drag|drop|move|resiz|slider|reorder|rearrang|select|highlight",
+        "hold_and_press": r"hold|select|multiple|shift",
+        "save_to_knowledge": r"remember|note|copy|paste|compare|collect|write down|then",
+        "switch_applications": r"switch|back to|other app|another app|window",
+    }
 
-    # Coordinates
-    The screenshot is {width}x{height} pixels. End every element description you pass to click, type, scroll or drag_and_drop with the pixel coordinates of that element's center, written as @(x, y), with x below {width} and y below {height}. For example:
-    agent.click("The blue Submit button below the form @({ex1}, {ey1})", 1, "left")
-    Do not add coordinates to the phrases given to highlight_text_span.
-    """)
+    @staticmethod
+    def _action_line(name, method):
+        params = []
+        for param in list(inspect.signature(method).parameters.values())[1:]:
+            if param.default is inspect.Parameter.empty:
+                params.append(param.name)
+            else:
+                params.append(f"{param.name}={param.default!r}")
+        doc = (method.__doc__ or "").strip().splitlines()[0]
+        return f"agent.{name}({', '.join(params)})  # {doc}"
+
+    @staticmethod
+    def construct_pixel_worker_prompt(aci, task, platform, skipped_actions=()):
+        """The prompt for PixelACI: coordinates instead of element descriptions,
+        one line of reasoning, and only the actions this task is likely to need."""
+        hidden = set(skipped_actions) | set(aci.hidden_actions)
+        lines = []
+        for name in dir(type(aci)):
+            method = getattr(type(aci), name)
+            if name in hidden or not getattr(method, "is_agent_action", False):
+                continue
+            pattern = PROCEDURAL_MEMORY.OPTIONAL_ACTIONS.get(name)
+            if pattern and not re.search(pattern, task, re.IGNORECASE):
+                continue
+            lines.append(PROCEDURAL_MEMORY._action_line(name, method))
+
+        w, h = aci.coord_width, aci.coord_height
+        if aci.normalized:
+            coords = (
+                "Give coordinates from 0 to 1000 on both axes, in thousandths of "
+                "the screenshot's width and height: (0, 0) is the top left corner, "
+                "(1000, 1000) the bottom right."
+            )
+        else:
+            coords = (
+                f"The screenshot is {w}x{h} pixels: x runs from 0 at the left to "
+                f"{w - 1}, y from 0 at the top to {h - 1}."
+            )
+        mod = "command" if platform == "darwin" else "ctrl"
+        prompt = textwrap.dedent(f"""\
+        You operate a {platform} computer to do this task: `{task}`
+        Each turn you get a screenshot. {coords} Use the center of the element you act on, read off the screenshot.
+
+        Reply with one line of reasoning and one action, nothing else:
+        Thought: <did the last action work; what you do now>
+        ```python
+        agent.click({w * 3 // 5}, {h * 2 // 5})
+        ```
+
+        Actions:
+        """)
+        prompt += "\n".join(lines) + "\n\nRules:\n"
+        prompt += textwrap.dedent(f"""\
+        - One action per reply.
+        - Prefer keyboard shortcuts, like agent.hotkey(['{mod}', 'l']), to clicking.
+        - If the last action changed nothing, try something different.
+        - Call agent.done() only when the screen shows the task is complete, agent.fail() if it cannot be done.
+        """)
+        if platform == "darwin":
+            prompt += "- Do not use command+tab.\n"
+        if "call_code_agent" not in hidden:
+            prompt += "\n" + PROCEDURAL_MEMORY.CODE_AGENT_GUIDELINES
+        return prompt.strip()
 
     # For reflection agent, post-action verification mainly for cycle detection
     REFLECTION_ON_TRAJECTORY = textwrap.dedent("""

@@ -45,27 +45,6 @@ You need at least one API key for your chosen provider:
 
 By default, the wrapper uses Anthropic's Claude Sonnet 4.5. You can modify `agent_s_wrapper.py` to use a different provider and model.
 
-### Grounding Model Configuration (Required)
-
-Agent-S requires a grounding model for visual element detection. We recommend [UI-TARS-1.5-7B](https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B):
-
-- **`AGENT_S_GROUND_URL`** (Required): Grounding model endpoint URL
-- **`AGENT_S_GROUND_MODEL`** (Required): Model name (default: "ui-tars-1.5-7b")
-- **`AGENT_S_GROUNDING_WIDTH`** (Required): Output coordinate width (default: "1920")
-- **`AGENT_S_GROUNDING_HEIGHT`** (Required): Output coordinate height (default: "1080")
-- **`AGENT_S_GROUND_API_KEY`** (Optional): API key for grounding endpoint
-
-Example configuration:
-```bash
-export AGENT_S_GROUND_URL="http://localhost:8080"
-export AGENT_S_GROUND_API_KEY="your-grounding-api-key"
-export AGENT_S_GROUND_MODEL="ui-tars-1.5-7b"
-export AGENT_S_GROUNDING_WIDTH="1920"
-export AGENT_S_GROUNDING_HEIGHT="1080"
-```
-
-See the [Agent-S documentation](https://github.com/simular-ai/Agent-S#grounding-models-required) for details on setting up grounding models.
-
 ## Installation
 
 1. **Clone or copy this directory** to your OpenClaw skills folder:
@@ -159,7 +138,6 @@ Verify the integration works:
 
 - [ ] `agent_s` executable is in PATH
 - [ ] `ANTHROPIC_API_KEY` is set
-- [ ] `AGENT_S_GROUND_URL` is set (grounding model endpoint)
 - [ ] Scripts are executable
 - [ ] OpenClaw agent can read skill files
 - [ ] Test task executes successfully
@@ -260,16 +238,8 @@ source ~/.zshrc  # or ~/.bashrc
 ### Task failures
 
 1. Check the logs in `~/workspace/Agent-S/logs/` for detailed error messages
-2. Verify grounding configuration if using custom endpoint
-3. Ensure task description is clear and specific
-4. Try with `--no-reflection` for simpler tasks
-
-### Grounding model issues
-
-If you see errors about grounding:
-- Verify `AGENT_S_GROUND_URL` is accessible
-- Check `AGENT_S_GROUND_API_KEY` is correct
-- Ensure grounding dimensions match your model's output resolution
+2. Ensure task description is clear and specific
+3. Try with `--no-reflection` for simpler tasks
 
 ## Files
 

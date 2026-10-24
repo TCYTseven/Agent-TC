@@ -62,8 +62,8 @@ agent_s_task(task="Open System Preferences and check the current display resolut
 
 Agent-S uses:
 - **Main Model**: Claude Sonnet 4.5 for reasoning and planning
-- **Grounding Model**: UI-TARS-1.5-7B for visual grounding and coordinate extraction
-- **Screen Resolution**: Automatically scaled to 2400px max dimension
+- **Clicking**: the main model reads pixel coordinates off the screenshot; there is no separate grounding model
+- **Screen Resolution**: screenshots are scaled to the size the model sees
 - **Platform Support**: macOS, Linux, Windows
 
 ## Safety
@@ -79,13 +79,6 @@ Agent-S requires configuration via environment variables:
 
 **Required:**
 - `ANTHROPIC_API_KEY`: API key for Claude model
-- `AGENT_S_GROUND_URL`: Grounding model endpoint URL
-- `AGENT_S_GROUND_MODEL`: Grounding model name (default: ui-tars-1.5-7b)
-- `AGENT_S_GROUNDING_WIDTH`: Output width (default: 1920)
-- `AGENT_S_GROUNDING_HEIGHT`: Output height (default: 1080)
-
-**Optional:**
-- `AGENT_S_GROUND_API_KEY`: API key for grounding endpoint
 
 See the README.md in this directory for detailed setup instructions.
 
