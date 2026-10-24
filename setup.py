@@ -35,7 +35,8 @@ setup(
     extras_require={"dev": ["black"], "bbon": ["opencv-python"]},
     entry_points={
         "console_scripts": [
-            "agent_s=gui_agents.s3.cli_app:main",
+            "agent-tc=gui_agents.s3.cli_app:main",
+            "agent_s=gui_agents.s3.cli_app:main",  # old name
         ],
     },
     classifiers=[
