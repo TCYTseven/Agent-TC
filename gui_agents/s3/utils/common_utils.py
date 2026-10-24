@@ -35,25 +35,18 @@ def create_pyautogui_code(agent, code: str, obs: Dict) -> str:
 def call_llm_safe(
     agent, temperature: float = 0.0, use_thinking: bool = False, **kwargs
 ) -> str:
-    # Retry if fails
-    max_retries = 3  # Set the maximum number of retries
-    attempt = 0
-    response = ""
-    while attempt < max_retries:
+    """Call the model, retrying up to 3 times. Returns "" if every try fails."""
+    for attempt in range(3):
         try:
             response = agent.get_response(
                 temperature=temperature, use_thinking=use_thinking, **kwargs
             )
-            assert response is not None, "Response from agent should not be None"
-            print("Response success!")
-            break  # If successful, break out of the loop
+            if response is not None:
+                return response
         except Exception as e:
-            attempt += 1
-            print(f"Attempt {attempt} failed: {e}")
-            if attempt == max_retries:
-                print("Max retries reached. Handling failure.")
-        time.sleep(1.0)
-    return response if response is not None else ""
+            logger.warning("LLM call attempt %d failed: %s", attempt + 1, e)
+        time.sleep(0.5 * (attempt + 1))
+    return ""
 
 
 def call_llm_formatted(generator, format_checkers, **kwargs):
@@ -123,7 +116,6 @@ def call_llm_formatted(generator, format_checkers, **kwargs):
             logger.error(
                 "Max retries reached when formatting response. Handling failure."
             )
-        time.sleep(1.0)
     return response
 
 

@@ -79,10 +79,12 @@ class LMMEngineOpenAI(LMMEngine):
         api_version=None,
         organization=None,
         azure_endpoint=None,
+        reasoning_effort="low",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.engine_type = engine_type
+        self.reasoning_effort = reasoning_effort
         base_url = base_url or azure_endpoint
         key_env, url_env, default_url, default_key = PROVIDERS.get(
             engine_type, PROVIDERS["openai"]
@@ -129,19 +131,29 @@ class LMMEngineOpenAI(LMMEngine):
                 )
         return self.llm_client
 
+    def is_reasoning_model(self):
+        return self.engine_type in ("openai", "azure") and self.model.startswith(
+            ("o1", "o3", "o4", "gpt-5")
+        )
+
     @RETRY
     def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
         max_tokens = max_new_tokens or self.max_tokens
-        if max_tokens and self.engine_type != "openai":
-            kwargs["max_tokens"] = max_tokens
-        elif max_tokens:
-            kwargs["max_completion_tokens"] = max_tokens
+        if self.is_reasoning_model():
+            # Reasoning tokens count toward the cap, so a cap would cut answers
+            # short; low effort is what makes these models fast.
+            kwargs.setdefault("reasoning_effort", self.reasoning_effort)
+            if self.temperature is not None:
+                kwargs["temperature"] = self.temperature
+        else:
+            kwargs["temperature"] = self._temp(temperature)
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
         return (
             self.client()
             .chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=self._temp(temperature),
                 **kwargs,
             )
             .choices[0]
