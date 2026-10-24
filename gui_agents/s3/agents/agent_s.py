@@ -54,7 +54,7 @@ class AgentS3(UIAgent):
         grounding_agent: ACI,
         platform: str = platform.system().lower(),
         max_trajectory_length: int = 8,
-        enable_reflection: bool = True,
+        enable_reflection: bool = False,
     ):
         """Initialize a minimalist AgentS2 without hierarchy
 

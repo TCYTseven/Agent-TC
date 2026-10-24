@@ -237,6 +237,7 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
         engine_params,
         grounding_agent,
         platform="linux",
+        enable_reflection=True,  # the published OSWorld runs used reflection
     )
 
     for domain in tqdm(test_all_meta, desc="Domain"):

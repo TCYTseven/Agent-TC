@@ -130,6 +130,7 @@ def run_env_tasks(
             engine_params,
             grounding_agent,
             platform="linux",
+            enable_reflection=True,  # the published OSWorld runs used reflection
         )
 
         active_environments.append(env)

@@ -1,445 +1,267 @@
+"""Model engines. One OpenAI-compatible engine covers every provider that speaks
+the Chat Completions API; Anthropic has its own. Clients are created once and
+reused, so every call after the first skips the TLS handshake."""
+
 import os
 
+import anthropic
 import backoff
+import openai
 from anthropic import Anthropic
-from openai import (
-    AzureOpenAI,
-    APIConnectionError,
-    APIError,
-    AzureOpenAI,
-    OpenAI,
-    RateLimitError,
+from openai import AzureOpenAI, OpenAI
+
+# Retry only what can succeed on a second try; a 400 fails the same way again.
+RETRY = backoff.on_exception(
+    backoff.expo,
+    (
+        openai.APIConnectionError,
+        openai.RateLimitError,
+        openai.InternalServerError,
+        anthropic.APIConnectionError,
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+    ),
+    max_time=60,
 )
+
+# engine_type -> (api key env var, base url env var, default base url, default api key)
+PROVIDERS = {
+    "openai": ("OPENAI_API_KEY", None, None, None),
+    "azure": ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", None, None),
+    "gemini": (
+        "GEMINI_API_KEY",
+        "GEMINI_ENDPOINT_URL",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+        None,
+    ),
+    "open_router": (
+        "OPENROUTER_API_KEY",
+        "OPEN_ROUTER_ENDPOINT_URL",
+        "https://openrouter.ai/api/v1",
+        None,
+    ),
+    "vllm": ("vLLM_API_KEY", "vLLM_ENDPOINT_URL", None, "EMPTY"),
+    "huggingface": ("HF_TOKEN", "HF_ENDPOINT_URL", None, None),
+    "parasail": (
+        "PARASAIL_API_KEY",
+        "PARASAIL_ENDPOINT_URL",
+        "https://api.parasail.io/v1",
+        None,
+    ),
+    "ollama": (None, "OLLAMA_HOST", None, "ollama"),
+    "deepseek": (
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_ENDPOINT_URL",
+        "https://api.deepseek.com",
+        None,
+    ),
+    "qwen": (
+        "QWEN_API_KEY",
+        "QWEN_ENDPOINT_URL",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        None,
+    ),
+}
+
+# Providers whose URL must end in /v1
+NEEDS_V1 = {"ollama", "deepseek", "qwen"}
 
 
 class LMMEngine:
-    pass
+    def __init__(self, model=None, temperature=None, max_tokens=None, **kwargs):
+        assert model is not None, "model must be provided"
+        self.model = model
+        self.temperature = temperature  # forces a temperature (o3 needs 1.0)
+        self.max_tokens = max_tokens
+        self.llm_client = None
+
+    def _temp(self, temperature):
+        return self.temperature if self.temperature is not None else temperature
 
 
 class LMMEngineOpenAI(LMMEngine):
+    """Any Chat Completions endpoint: OpenAI, Azure, Gemini, OpenRouter, vLLM,
+    HuggingFace TGI, Parasail, Ollama, DeepSeek, Qwen."""
+
     def __init__(
         self,
+        engine_type="openai",
         base_url=None,
         api_key=None,
-        model=None,
-        rate_limit=-1,
-        temperature=None,
+        api_version=None,
         organization=None,
+        azure_endpoint=None,
+        reasoning_effort=None,
         **kwargs,
     ):
-        assert model is not None, "model must be provided"
-        self.model = model
+        super().__init__(**kwargs)
+        self.engine_type = engine_type
+        self.reasoning_effort = reasoning_effort
+        base_url = base_url or azure_endpoint
+        key_env, url_env, default_url, default_key = PROVIDERS.get(
+            engine_type, PROVIDERS["openai"]
+        )
+        base_url = base_url or (os.getenv(url_env) if url_env else None) or default_url
+        if engine_type in NEEDS_V1:
+            if not base_url:
+                raise ValueError(
+                    f"{engine_type.capitalize()} endpoint must be provided via 'base_url' "
+                    f"parameter or '{url_env}' environment variable."
+                )
+            if not base_url.rstrip("/").endswith("/v1"):
+                base_url = base_url.rstrip("/") + "/v1"
         self.base_url = base_url
-        self.api_key = api_key
-        self.organization = organization
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-        self.temperature = temperature  # Can force temperature to be the same (in the case of o3 requiring temperature to be 1)
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("OPENAI_API_KEY")
-        if api_key is None:
+        self.api_key = (
+            api_key or (os.getenv(key_env) if key_env else None) or default_key
+        )
+        if engine_type in ("deepseek", "qwen") and not self.api_key:
             raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named OPENAI_API_KEY"
+                f"{engine_type.capitalize()} API key must be provided via 'api_key' "
+                f"parameter or '{key_env}' environment variable."
             )
-        organization = self.organization or os.getenv("OPENAI_ORG_ID")
-        if not self.llm_client:
-            if not self.base_url:
-                self.llm_client = OpenAI(api_key=api_key, organization=organization)
+        self.api_version = api_version or os.getenv("OPENAI_API_VERSION")
+        self.organization = organization or os.getenv("OPENAI_ORG_ID")
+        # HuggingFace TGI serves a single model under the name "tgi"
+        if engine_type == "huggingface":
+            self.model = "tgi"
+
+    def client(self):
+        if self.llm_client is None:
+            if not self.api_key:
+                raise ValueError(f"No API key for {self.engine_type}")
+            if self.engine_type == "azure":
+                self.llm_client = AzureOpenAI(
+                    azure_endpoint=self.base_url,
+                    api_key=self.api_key,
+                    api_version=self.api_version,
+                )
             else:
                 self.llm_client = OpenAI(
-                    base_url=self.base_url, api_key=api_key, organization=organization
+                    base_url=self.base_url or None,
+                    api_key=self.api_key,
+                    organization=self.organization,
                 )
+        return self.llm_client
+
+    def is_reasoning_model(self):
+        model = self.model
         return (
-            self.llm_client.chat.completions.create(
+            self.engine_type in ("openai", "azure")
+            and model.startswith(("o1", "o3", "o4", "gpt-5"))
+            and "chat" not in model
+            and not model.startswith(("o1-mini", "o1-preview"))
+        )
+
+    @RETRY
+    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
+        max_tokens = max_new_tokens or self.max_tokens
+        if self.is_reasoning_model():
+            # Reasoning tokens count toward the cap, so a cap would cut answers
+            # short; low effort is what makes these models fast.
+            if self.reasoning_effort:
+                kwargs.setdefault("reasoning_effort", self.reasoning_effort)
+            if self.temperature is not None:
+                kwargs["temperature"] = self.temperature
+        else:
+            kwargs["temperature"] = self._temp(temperature)
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
+        return (
+            self.client()
+            .chat.completions.create(
                 model=self.model,
                 messages=messages,
-                # max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=(
-                    temperature if self.temperature is None else self.temperature
-                ),
                 **kwargs,
             )
             .choices[0]
             .message.content
         )
+
+
+def _to_anthropic(content):
+    """OpenAI-style content parts -> Anthropic content blocks."""
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for part in content:
+        if part.get("type") == "image_url":
+            header, data = part["image_url"]["url"].split(",", 1)
+            mime = header[5:].split(";")[0]
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": data},
+                }
+            )
+        else:
+            blocks.append(part)
+    return blocks
 
 
 class LMMEngineAnthropic(LMMEngine):
-    def __init__(
-        self,
-        base_url=None,
-        api_key=None,
-        model=None,
-        thinking=False,
-        temperature=None,
-        **kwargs,
-    ):
-        assert model is not None, "model must be provided"
-        self.model = model
-        self.thinking = thinking
+    def __init__(self, base_url=None, api_key=None, thinking=False, **kwargs):
+        super().__init__(**kwargs)
+        self.base_url = base_url
         self.api_key = api_key
-        self.llm_client = None
-        self.temperature = temperature
+        self.thinking = thinking
 
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("ANTHROPIC_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named ANTHROPIC_API_KEY"
-            )
-        self.llm_client = Anthropic(api_key=api_key)
-        # Use the instance temperature if not specified in the call
-        temp = self.temperature if temperature is None else temperature
-        if self.thinking:
-            full_response = self.llm_client.messages.create(
-                system=messages[0]["content"][0]["text"],
-                model=self.model,
-                messages=messages[1:],
-                max_tokens=8192,
-                thinking={"type": "enabled", "budget_tokens": 4096},
-                **kwargs,
-            )
-            thoughts = full_response.content[0].thinking
-            return full_response.content[1].text
-        return (
-            self.llm_client.messages.create(
-                system=messages[0]["content"][0]["text"],
-                model=self.model,
-                messages=messages[1:],
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=temp,
-                **kwargs,
-            )
-            .content[0]
-            .text
+    def client(self):
+        if self.llm_client is None:
+            api_key = self.api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "An API Key needs to be provided in either the api_key parameter "
+                    "or as an environment variable named ANTHROPIC_API_KEY"
+                )
+            self.llm_client = Anthropic(api_key=api_key, base_url=self.base_url or None)
+        return self.llm_client
+
+    def _request(self, messages, temperature, max_new_tokens, thinking, **kwargs):
+        # The system prompt is long and fixed for a task: cache it so later
+        # steps skip re-reading it (lower latency on every step after the first).
+        system_content = messages[0]["content"]
+        system = [
+            {
+                "type": "text",
+                "text": (
+                    system_content
+                    if isinstance(system_content, str)
+                    else system_content[0]["text"]
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        msgs = [
+            {"role": m["role"], "content": _to_anthropic(m["content"])}
+            for m in messages[1:]
+        ]
+        if thinking:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": 4096}
+            max_tokens = 8192
+        else:
+            kwargs["temperature"] = self._temp(temperature)
+            max_tokens = max_new_tokens or self.max_tokens or 4096
+        return self.client().messages.create(
+            system=system,
+            model=self.model,
+            messages=msgs,
+            max_tokens=max_tokens,
+            **kwargs,
         )
 
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    # Compatible with Claude-3.7 Sonnet thinking mode
+    @RETRY
+    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
+        response = self._request(
+            messages, temperature, max_new_tokens, self.thinking, **kwargs
+        )
+        return next(b.text for b in response.content if b.type == "text")
+
+    @RETRY
     def generate_with_thinking(
         self, messages, temperature=0.0, max_new_tokens=None, **kwargs
     ):
-        """Generate the next message based on previous messages, and keeps the thinking tokens"""
-        api_key = self.api_key or os.getenv("ANTHROPIC_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named ANTHROPIC_API_KEY"
-            )
-        self.llm_client = Anthropic(api_key=api_key)
-        full_response = self.llm_client.messages.create(
-            system=messages[0]["content"][0]["text"],
-            model=self.model,
-            messages=messages[1:],
-            max_tokens=8192,
-            thinking={"type": "enabled", "budget_tokens": 4096},
-            **kwargs,
-        )
-
-        thoughts = full_response.content[0].thinking
-        answer = full_response.content[1].text
-        full_response = (
-            f"<thoughts>\n{thoughts}\n</thoughts>\n\n<answer>\n{answer}\n</answer>\n"
-        )
-        return full_response
-
-
-class LMMEngineGemini(LMMEngine):
-    def __init__(
-        self,
-        base_url=None,
-        api_key=None,
-        model=None,
-        rate_limit=-1,
-        temperature=None,
-        **kwargs,
-    ):
-        assert model is not None, "model must be provided"
-        self.model = model
-        self.base_url = base_url
-        self.api_key = api_key
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-        self.temperature = temperature
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("GEMINI_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named GEMINI_API_KEY"
-            )
-        base_url = self.base_url or os.getenv("GEMINI_ENDPOINT_URL")
-        if base_url is None:
-            raise ValueError(
-                "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named GEMINI_ENDPOINT_URL"
-            )
-        if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
-        # Use the temperature passed to generate, otherwise use the instance's temperature, otherwise default to 0.0
-        temp = self.temperature if temperature is None else temperature
-        return (
-            self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=temp,
-                **kwargs,
-            )
-            .choices[0]
-            .message.content
-        )
-
-
-class LMMEngineOpenRouter(LMMEngine):
-    def __init__(
-        self,
-        base_url=None,
-        api_key=None,
-        model=None,
-        rate_limit=-1,
-        temperature=None,
-        **kwargs,
-    ):
-        assert model is not None, "model must be provided"
-        self.model = model
-        self.base_url = base_url
-        self.api_key = api_key
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-        self.temperature = temperature
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("OPENROUTER_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named OPENROUTER_API_KEY"
-            )
-        base_url = self.base_url or os.getenv("OPEN_ROUTER_ENDPOINT_URL")
-        if base_url is None:
-            raise ValueError(
-                "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named OPEN_ROUTER_ENDPOINT_URL"
-            )
-        if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
-        # Use self.temperature if set, otherwise use the temperature argument
-        temp = self.temperature if self.temperature is not None else temperature
-        return (
-            self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=temp,
-                **kwargs,
-            )
-            .choices[0]
-            .message.content
-        )
-
-
-class LMMEngineAzureOpenAI(LMMEngine):
-    def __init__(
-        self,
-        base_url=None,
-        api_key=None,
-        azure_endpoint=None,
-        model=None,
-        api_version=None,
-        rate_limit=-1,
-        temperature=None,
-        **kwargs,
-    ):
-        assert model is not None, "model must be provided"
-        self.model = model
-        self.api_version = api_version
-        self.api_key = api_key
-        self.azure_endpoint = azure_endpoint
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-        self.cost = 0.0
-        self.temperature = temperature
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("AZURE_OPENAI_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named AZURE_OPENAI_API_KEY"
-            )
-        api_version = self.api_version or os.getenv("OPENAI_API_VERSION")
-        if api_version is None:
-            raise ValueError(
-                "api_version must be provided either as a parameter or as an environment variable named OPENAI_API_VERSION"
-            )
-        azure_endpoint = self.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
-        if azure_endpoint is None:
-            raise ValueError(
-                "An Azure API endpoint needs to be provided in either the azure_endpoint parameter or as an environment variable named AZURE_OPENAI_ENDPOINT"
-            )
-        if not self.llm_client:
-            self.llm_client = AzureOpenAI(
-                azure_endpoint=azure_endpoint,
-                api_key=api_key,
-                api_version=api_version,
-            )
-        # Use self.temperature if set, otherwise use the temperature argument
-        temp = self.temperature if self.temperature is not None else temperature
-        completion = self.llm_client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=max_new_tokens if max_new_tokens else 4096,
-            temperature=temp,
-            **kwargs,
-        )
-        total_tokens = completion.usage.total_tokens
-        self.cost += 0.02 * ((total_tokens + 500) / 1000)
-        return completion.choices[0].message.content
-
-
-class LMMEnginevLLM(LMMEngine):
-    def __init__(
-        self,
-        base_url=None,
-        api_key=None,
-        model=None,
-        rate_limit=-1,
-        temperature=None,
-        **kwargs,
-    ):
-        assert model is not None, "model must be provided"
-        self.model = model
-        self.api_key = api_key
-        self.base_url = base_url
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-        self.temperature = temperature
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(
-        self,
-        messages,
-        temperature=0.0,
-        top_p=0.8,
-        repetition_penalty=1.05,
-        max_new_tokens=512,
-        **kwargs,
-    ):
-        api_key = self.api_key or os.getenv("vLLM_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "A vLLM API key needs to be provided in either the api_key parameter or as an environment variable named vLLM_API_KEY"
-            )
-        base_url = self.base_url or os.getenv("vLLM_ENDPOINT_URL")
-        if base_url is None:
-            raise ValueError(
-                "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named vLLM_ENDPOINT_URL"
-            )
-        if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
-        # Use self.temperature if set, otherwise use the temperature argument
-        temp = self.temperature if self.temperature is not None else temperature
-        completion = self.llm_client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=max_new_tokens if max_new_tokens else 4096,
-            temperature=temp,
-            top_p=top_p,
-            extra_body={"repetition_penalty": repetition_penalty},
-        )
-        return completion.choices[0].message.content
-
-
-class LMMEngineHuggingFace(LMMEngine):
-    def __init__(self, base_url=None, api_key=None, rate_limit=-1, **kwargs):
-        self.base_url = base_url
-        self.api_key = api_key
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("HF_TOKEN")
-        if api_key is None:
-            raise ValueError(
-                "A HuggingFace token needs to be provided in either the api_key parameter or as an environment variable named HF_TOKEN"
-            )
-        base_url = self.base_url or os.getenv("HF_ENDPOINT_URL")
-        if base_url is None:
-            raise ValueError(
-                "HuggingFace endpoint must be provided as base_url parameter or as an environment variable named HF_ENDPOINT_URL."
-            )
-        if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
-        return (
-            self.llm_client.chat.completions.create(
-                model="tgi",
-                messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=temperature,
-                **kwargs,
-            )
-            .choices[0]
-            .message.content
-        )
-
-
-class LMMEngineParasail(LMMEngine):
-    def __init__(
-        self, base_url=None, api_key=None, model=None, rate_limit=-1, **kwargs
-    ):
-        assert model is not None, "Parasail model id must be provided"
-        self.base_url = base_url
-        self.model = model
-        self.api_key = api_key
-        self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
-        self.llm_client = None
-
-    @backoff.on_exception(
-        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
-    )
-    def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
-        api_key = self.api_key or os.getenv("PARASAIL_API_KEY")
-        if api_key is None:
-            raise ValueError(
-                "A Parasail API key needs to be provided in either the api_key parameter or as an environment variable named PARASAIL_API_KEY"
-            )
-        base_url = self.base_url
-        if base_url is None:
-            raise ValueError(
-                "Parasail endpoint must be provided as base_url parameter or as an environment variable named PARASAIL_ENDPOINT_URL"
-            )
-        if not self.llm_client:
-            self.llm_client = OpenAI(
-                base_url=base_url if base_url else "https://api.parasail.io/v1",
-                api_key=api_key,
-            )
-        return (
-            self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
-                temperature=temperature,
-                **kwargs,
-            )
-            .choices[0]
-            .message.content
-        )
+        """Keeps the thinking tokens, wrapped as <thoughts>/<answer>."""
+        response = self._request(messages, temperature, max_new_tokens, True, **kwargs)
+        thoughts = "".join(b.thinking for b in response.content if b.type == "thinking")
+        answer = "".join(b.text for b in response.content if b.type == "text")
+        return f"<thoughts>\n{thoughts}\n</thoughts>\n\n<answer>\n{answer}\n</answer>\n"

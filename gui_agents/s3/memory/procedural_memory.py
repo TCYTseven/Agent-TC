@@ -85,15 +85,15 @@ class PROCEDURAL_MEMORY:
         """
 
         procedural_memory += textwrap.dedent("""
-        Your response should be formatted like this:
+        Be brief: every word you write adds latency. Your response should be formatted like this:
         (Previous action verification)
-        Carefully analyze based on the screenshot if the previous action was successful. If the previous action was not successful, provide a reason for the failure.
+        One sentence: did the previous action succeed? If not, why.
 
         (Screenshot Analysis)
-        Closely examine and describe the current state of the desktop along with the currently open applications.
+        One or two sentences on the parts of the screen that matter for the next action.
 
         (Next Action)
-        Based on the current screenshot and the history of your previous interaction with the UI, decide on the next action in natural language to accomplish the given task.
+        One sentence describing the next action.
 
         (Grounded Action)
         Translate the next action into code using the provided API methods. Format the code like this:
@@ -138,13 +138,14 @@ class PROCEDURAL_MEMORY:
     - DO NOT suggest any specific future plans or actions. Your only goal is to provide a reflection, not an actual plan or action.
     - Any response that falls under Case 1 should explain why the trajectory is not going according to plan. You should especially lookout for cycles of actions that are continually repeated with no progress.
     - Any response that falls under Case 2 should be concise, since you just need to affirm the agent to continue with the current trajectory.
+    - Keep every reflection under 80 words.
     - IMPORTANT: Do not assume file modifications or application restarts are errors - they may be legitimate code agent actions
     - Consider whether observed changes align with the task requirements before determining if the trajectory is off-track
     """)
 
     PHRASE_TO_WORD_COORDS_PROMPT = textwrap.dedent("""
     You are an expert in graphical user interfaces. Your task is to process a phrase of text, and identify the most relevant word on the computer screen.
-    You are provided with a phrase, a table with alxl the text on the screen, and a screenshot of the computer screen. You will identify the single word id that is best associated with the provided phrase.
+    You are provided with a phrase, a table with all the text on the screen, and a screenshot of the computer screen. You will identify the single word id that is best associated with the provided phrase.
     This single word must be displayed on the computer screenshot, and its location on the screen should align with the provided phrase.
     Each row in the text table provides 2 pieces of data in the following order. 1st is the unique word id. 2nd is the corresponding word.
 
@@ -270,28 +271,6 @@ class PROCEDURAL_MEMORY:
     - After in-place modifications, close/reopen files via GUI to show changes
 
     Focus on progress within your step budget.
-    """)
-
-    CODE_SUMMARY_AGENT_PROMPT = textwrap.dedent("""\
-    You are a code execution summarizer. Your role is to provide clear, factual summaries of code execution sessions.
-
-    Key responsibilities:
-    - Summarize the code logic and approach used at each step
-    - Describe the outputs and results produced by code execution
-    - Explain the progression of the solution approach
-    - Use neutral, objective language without making judgments about success or failure
-    - Focus on what was attempted and what resulted
-    - Keep summaries concise and well-structured
-
-    CRITICAL: Include verification instructions for the GUI agent
-    - If files were modified, provide specific verification guidance:
-      * What files were changed and their expected final state
-      * What the GUI agent should look for when verifying
-      * How to verify the changes are correct
-      * Whether the task appears complete or if additional GUI actions are needed
-    - This helps the GUI agent understand what to expect and verify your work properly
-
-    Always maintain a factual, non-judgmental tone.
     """)
 
     BEHAVIOR_NARRATOR_SYSTEM_PROMPT = textwrap.dedent("""\
