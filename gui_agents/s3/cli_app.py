@@ -8,11 +8,10 @@ import sys
 import time
 
 import pyautogui
-from PIL import Image
 
 from gui_agents.s3.agents.agent_s import AgentS3
 from gui_agents.s3.agents.grounding import OSWorldACI
-from gui_agents.s3.utils.images import jpeg_bytes
+from gui_agents.s3.utils.screen import grab_screen, settled_screen
 from gui_agents.s3.utils.local_env import LocalEnv
 
 current_platform = platform.system().lower()
@@ -92,30 +91,6 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     return int(width * scale), int(height * scale)
 
 
-def grab_screen(size) -> bytes:
-    """Screenshot as JPEG bytes. mss is several times faster than pyautogui's
-    screenshot on macOS and Linux; pyautogui is the fallback."""
-    img = None
-    try:
-        import mss
-
-        with mss.mss() as sct:
-            shot = sct.grab(sct.monitors[1])
-        # Use it only if it is the whole screen pyautogui clicks on (with a
-        # second monitor the primary one alone is a different shape); retina
-        # captures are 2x, which keeps the shape.
-        w, h = pyautogui.size()
-        if abs(shot.size[0] / shot.size[1] - w / h) < 0.01:
-            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    except Exception:
-        pass
-    if img is None:
-        img = pyautogui.screenshot()
-    if img.size != size:
-        img = img.resize(size, Image.BILINEAR)
-    return jpeg_bytes(img)
-
-
 def notify_done():
     if current_platform == "darwin":
         os.system(
@@ -125,13 +100,15 @@ def notify_done():
         os.system("notify-send 'Agent S' 'Task Completed' 2>/dev/null")
 
 
-def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float = 0.5):
+def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float = 1.0):
+    screenshot = grab_screen(size)
     for step in range(max_steps):
         while paused:
             time.sleep(0.1)
         started = time.time()
-        obs = {"screenshot": grab_screen(size)}
-        info, code = agent.predict(instruction=instruction, observation=obs)
+        info, code = agent.predict(
+            instruction=instruction, observation={"screenshot": screenshot}
+        )
         action = code[0]
         print(f"🔄 Step {step + 1}/{max_steps} ({time.time() - started:.1f}s)")
 
@@ -139,14 +116,13 @@ def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float 
         if signal_word in ("DONE", "FAIL"):
             notify_done()
             break
-        if signal_word in ("NEXT", "WAIT"):
-            continue
-        while paused:
-            time.sleep(0.1)
-        logger.info("EXECUTING CODE: %s", action)
-        exec(action)
-        # Let the UI react before the next screenshot
-        time.sleep(settle)
+        if signal_word not in ("NEXT", "WAIT"):
+            while paused:
+                time.sleep(0.1)
+            logger.info("EXECUTING CODE: %s", action)
+            exec(action)
+        # The next screenshot is taken once the screen stops changing
+        screenshot = settled_screen(size, max_wait=settle)
 
 
 def main():
@@ -207,8 +183,8 @@ def main():
     p.add_argument(
         "--settle",
         type=float,
-        default=0.5,
-        help="Seconds to wait after an action before the next screenshot",
+        default=1.0,
+        help="Most seconds to wait for the screen to stop changing after an action",
     )
     p.add_argument(
         "--image_max_side",
@@ -311,6 +287,16 @@ def main():
         max_trajectory_length=args.max_trajectory_length,
         enable_reflection=args.enable_reflection,
     )
+
+    # Open the API connections while the user types or the first screenshot is taken
+    for engine in {
+        id(e): e
+        for e in (
+            agent.executor.generator_agent.engine,
+            grounding_agent.grounding_model.engine,
+        )
+    }.values():
+        engine.warm()
 
     def run(task):
         agent.reset()

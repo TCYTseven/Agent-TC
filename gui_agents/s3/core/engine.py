@@ -3,6 +3,7 @@ the Chat Completions API; Anthropic has its own. Clients are created once and
 reused, so every call after the first skips the TLS handshake."""
 
 import os
+import threading
 
 import anthropic
 import backoff
@@ -67,6 +68,20 @@ PROVIDERS = {
 NEEDS_V1 = {"ollama", "deepseek", "qwen"}
 
 
+_clients = {}
+_clients_lock = threading.Lock()
+
+
+def shared_client(cls, **kwargs):
+    """One client (and its connection pool) per endpoint and key, shared by the
+    planner, grounder, reflection and code agent, so they reuse warm connections."""
+    key = (cls, tuple(sorted(kwargs.items())))
+    with _clients_lock:
+        if key not in _clients:
+            _clients[key] = cls(**kwargs)
+        return _clients[key]
+
+
 class LMMEngine:
     def __init__(self, model=None, temperature=None, max_tokens=None, **kwargs):
         assert model is not None, "model must be provided"
@@ -74,6 +89,18 @@ class LMMEngine:
         self.temperature = temperature  # forces a temperature (o3 needs 1.0)
         self.max_tokens = max_tokens
         self.llm_client = None
+
+    def warm(self):
+        """Open the connection in the background (TLS and DNS take a few hundred
+        milliseconds), so the first real call doesn't pay for it."""
+
+        def run():
+            try:
+                self.client().models.list()
+            except Exception:
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _temp(self, temperature):
         return self.temperature if self.temperature is not None else temperature
@@ -130,13 +157,15 @@ class LMMEngineOpenAI(LMMEngine):
             if not self.api_key:
                 raise ValueError(f"No API key for {self.engine_type}")
             if self.engine_type == "azure":
-                self.llm_client = AzureOpenAI(
+                self.llm_client = shared_client(
+                    AzureOpenAI,
                     azure_endpoint=self.base_url,
                     api_key=self.api_key,
                     api_version=self.api_version,
                 )
             else:
-                self.llm_client = OpenAI(
+                self.llm_client = shared_client(
+                    OpenAI,
                     base_url=self.base_url or None,
                     api_key=self.api_key,
                     organization=self.organization,
@@ -213,7 +242,9 @@ class LMMEngineAnthropic(LMMEngine):
                     "An API Key needs to be provided in either the api_key parameter "
                     "or as an environment variable named ANTHROPIC_API_KEY"
                 )
-            self.llm_client = Anthropic(api_key=api_key, base_url=self.base_url or None)
+            self.llm_client = shared_client(
+                Anthropic, api_key=api_key, base_url=self.base_url or None
+            )
         return self.llm_client
 
     def _request(self, messages, temperature, max_new_tokens, thinking, **kwargs):
