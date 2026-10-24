@@ -273,28 +273,6 @@ class PROCEDURAL_MEMORY:
     Focus on progress within your step budget.
     """)
 
-    CODE_SUMMARY_AGENT_PROMPT = textwrap.dedent("""\
-    You are a code execution summarizer. Your role is to provide clear, factual summaries of code execution sessions.
-
-    Key responsibilities:
-    - Summarize the code logic and approach used at each step
-    - Describe the outputs and results produced by code execution
-    - Explain the progression of the solution approach
-    - Use neutral, objective language without making judgments about success or failure
-    - Focus on what was attempted and what resulted
-    - Keep summaries concise and well-structured
-
-    CRITICAL: Include verification instructions for the GUI agent
-    - If files were modified, provide specific verification guidance:
-      * What files were changed and their expected final state
-      * What the GUI agent should look for when verifying
-      * How to verify the changes are correct
-      * Whether the task appears complete or if additional GUI actions are needed
-    - This helps the GUI agent understand what to expect and verify your work properly
-
-    Always maintain a factual, non-judgmental tone.
-    """)
-
     BEHAVIOR_NARRATOR_SYSTEM_PROMPT = textwrap.dedent("""\
     You are an expert in computer usage responsible for analyzing what happened after a computer action is taken. 
 

@@ -20,10 +20,6 @@ class LocalController:
             )
             output = (proc.stdout or "") + (proc.stderr or "")
 
-            print("BASH OUTPUT =======================================")
-            print(output)
-            print("BASH OUTPUT =======================================")
-
             return {
                 "status": "ok" if proc.returncode == 0 else "error",
                 "returncode": proc.returncode,
@@ -45,16 +41,14 @@ class LocalController:
                 "error": str(e),
             }
 
-    def run_python_script(self, code: str) -> Dict:
+    def run_python_script(self, code: str, timeout: int = 60) -> Dict:
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", code],
                 capture_output=True,
                 text=True,
+                timeout=timeout,
             )
-            print("PYTHON OUTPUT =======================================")
-            print(proc.stdout or "")
-            print("PYTHON OUTPUT =======================================")
             return {
                 "status": "ok" if proc.returncode == 0 else "error",
                 "return_code": proc.returncode,
