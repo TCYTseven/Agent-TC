@@ -1,8 +1,8 @@
-# Deplying Agent S3 in OSWorld
+# Running on OSWorld
 
-# Step 1: Set up Agent S3
+# Step 1: Install
 
-Follow the [README.md](https://github.com/simular-ai/Agent-S/blob/main/gui_agents/s3/README.md) to set up Agent S3.
+Install the package as in the [README](../../README.md).
 
 # Step 2: Copying Over Run Files
 

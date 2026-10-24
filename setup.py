@@ -4,14 +4,14 @@ from setuptools import find_packages, setup
 
 # PyPI cannot resolve the README's relative links, so point them at GitHub.
 long_description = re.sub(
-    r'(\]\(|href=")\./', r"\1https://github.com/simular-ai/Agent-S/blob/main/",
+    r'(\]\(|href=")\./', r"\1https://github.com/TCYTseven/Agent-TC/blob/main/",
     open("README.md", encoding="utf-8").read(),
 )
 
 setup(
-    name="gui-agents",
+    name="agent-tc",
     version="0.4.0",
-    description="A library for creating general purpose GUI agents using multimodal LLMs.",
+    description="Tell your computer what to do in plain English; a fast computer-use agent.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Simular AI",
@@ -50,8 +50,8 @@ setup(
     ],
     keywords="ai, llm, gui, agent, multimodal",
     project_urls={
-        "Source": "https://github.com/simular-ai/Agent-S",
-        "Bug Reports": "https://github.com/simular-ai/Agent-S/issues",
+        "Source": "https://github.com/TCYTseven/Agent-TC",
+        "Bug Reports": "https://github.com/TCYTseven/Agent-TC/issues",
     },
     python_requires=">=3.9",
 )
