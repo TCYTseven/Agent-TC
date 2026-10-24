@@ -42,7 +42,7 @@ def _signature(img: Image.Image) -> bytes:
     return img.convert("L").resize((96, 54), Image.BILINEAR).tobytes()
 
 
-def settled_screen(size, max_wait: float = 1.0, min_wait: float = 0.1) -> bytes:
+def settled_screen(size, max_wait: float = 1.0, min_wait: float = 0.3) -> bytes:
     """Wait until two captures in a row look the same (or max_wait passes) and
     return the last one: most actions settle well before a fixed sleep would
     end, and slow ones get more time than it would give."""

@@ -89,13 +89,10 @@ class Worker(BaseModule):
             type(self.grounding_agent), skipped_actions=skipped_actions
         ).replace("CURRENT_OS", self.platform)
         if getattr(self.grounding_agent, "direct_coords", False):
+            ground = self.grounding_agent.engine_params_for_grounding
+            w, h = ground["grounding_width"], ground["grounding_height"]
             sys_prompt += PROCEDURAL_MEMORY.DIRECT_COORDS_NOTE.format(
-                width=self.grounding_agent.engine_params_for_grounding[
-                    "grounding_width"
-                ],
-                height=self.grounding_agent.engine_params_for_grounding[
-                    "grounding_height"
-                ],
+                width=w, height=h, ex1=w * 3 // 5, ey1=h * 4 // 5
             )
 
         self.generator_agent = self._create_agent(sys_prompt)

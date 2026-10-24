@@ -49,7 +49,7 @@ agent-tc --provider ollama --model qwen2.5vl:7b --model_url http://localhost:114
 
 ## Options
 
-Flags override the saved setup for one run.
+Flags override the saved setup for one run; on/off flags also take a `--no-` form (`--no-enable_local_env`).
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -85,17 +85,21 @@ import pyautogui
 from gui_agents.s3.agents.agent_s import AgentS3
 from gui_agents.s3.agents.grounding import OSWorldACI
 
-model = {"engine_type": "anthropic", "model": "claude-sonnet-5-5", "image_max_side": 1280}
-# Without a grounding server: the same model, at the size of the image it sees
-grounder = dict(model, grounding_width=1280, grounding_height=720)
+screen_w, screen_h = pyautogui.size()
+scale = 1280 / max(screen_w, screen_h)
+shot_w, shot_h = round(screen_w * scale), round(screen_h * scale)
 
-aci = OSWorldACI(None, "darwin", model, grounder, width=1920, height=1080, direct_coords=True)
+model = {"engine_type": "anthropic", "model": "claude-sonnet-5-5"}
+# Without a grounding server: the same model, at the size of the image it sees
+grounder = dict(model, grounding_width=shot_w, grounding_height=shot_h)
+aci = OSWorldACI(None, "darwin", model, grounder, width=screen_w, height=screen_h, direct_coords=True)
 agent = AgentS3(model, aci, platform="darwin")
 
 shot = io.BytesIO()
-pyautogui.screenshot().resize((1280, 720)).save(shot, format="JPEG")
+pyautogui.screenshot().resize((shot_w, shot_h)).convert("RGB").save(shot, format="JPEG")
 info, actions = agent.predict(instruction="Close the browser", observation={"screenshot": shot.getvalue()})
-exec(actions[0])
+if actions[0] not in ("DONE", "FAIL", "WAIT", "NEXT"):
+    exec(actions[0])
 ```
 
 [`gui_agents/s3/cli_app.py`](./gui_agents/s3/cli_app.py) has the full loop.

@@ -57,15 +57,16 @@ class PROCEDURAL_MEMORY:
         - ALWAYS verify code agent results with GUI actions before using agent.done(); NEVER trust code agent output alone. If verification or the code agent fails, use GUI actions to finish the task and only use agent.done() if results match expectations.
         - **CRITICAL**: Files modified by code agent may not show changes in currently open applications - you MUST close and reopen the entire application. Reloading the page/file is insufficient.
 
-        # General Task Guidelines
         - For formatting tasks, always use the code agent for proper formatting.
         - **Never use the code agent for charts, graphs, pivot tables, or visual elements—always use the GUI for those.**
-        - If creating a new sheet with no name specified, use default sheet names (e.g., "Sheet1", "Sheet2", etc.).
-        - After opening or reopening applications, wait at least 3 seconds for full loading.
         - Don't provide specific row/column numbers to the coding agent; let it infer the spreadsheet structure itself.
 
         """)
         procedural_memory += textwrap.dedent("""\
+        # General Task Guidelines
+        - If creating a new sheet with no name specified, use default sheet names (e.g., "Sheet1", "Sheet2", etc.).
+        - After opening or reopening applications, wait at least 3 seconds for full loading.
+
         Never assume a task is done based on appearances-always ensure the specific requested action has been performed and verify the modification. If you haven't executed any actions, the task is not complete.
 
         ### END OF GUIDELINES
@@ -125,9 +126,9 @@ class PROCEDURAL_MEMORY:
     DIRECT_COORDS_NOTE = textwrap.dedent("""
 
     # Coordinates
-    The screenshot is {width}x{height} pixels. End every element description you pass to an action with the pixel coordinates of that element's center, written as @(x, y). For example:
-    agent.click("The blue Submit button below the form @(812, 604)", 1, "left")
-    agent.drag_and_drop("The file report.pdf on the desktop @(120, 340)", "The Trash icon in the dock @(1210, 1050)")
+    The screenshot is {width}x{height} pixels. End every element description you pass to click, type, scroll or drag_and_drop with the pixel coordinates of that element's center, written as @(x, y), with x below {width} and y below {height}. For example:
+    agent.click("The blue Submit button below the form @({ex1}, {ey1})", 1, "left")
+    Do not add coordinates to the phrases given to highlight_text_span.
     """)
 
     # For reflection agent, post-action verification mainly for cycle detection

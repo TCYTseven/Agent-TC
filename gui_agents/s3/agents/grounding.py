@@ -180,7 +180,7 @@ set_cell_values(new_cell_values={cell_values}, app_name="{app_name}", sheet_name
 """
 
 
-DIRECT_COORDS = re.compile(r"@\s*\(\s*(\d{1,5})\s*,\s*(\d{1,5})\s*\)\s*$")
+DIRECT_COORDS = re.compile(r"\s*@\s*\(\s*(\d{1,5})\s*,\s*(\d{1,5})\s*\)[\s.,;:!]*$")
 
 
 @lru_cache(maxsize=8)
@@ -280,9 +280,15 @@ class OSWorldACI(ACI):
         """Ask the grounding model for the (x, y) of the described element.
         Answers are memoised per screenshot, so grounding the same element twice
         (a retried step, a repeated description) costs nothing."""
-        direct = DIRECT_COORDS.search(ref_expr)
+        direct = DIRECT_COORDS.search(ref_expr) if self.direct_coords else None
         if direct:
-            return [int(direct.group(1)), int(direct.group(2))]
+            w = self.engine_params_for_grounding["grounding_width"]
+            h = self.engine_params_for_grounding["grounding_height"]
+            return [
+                min(max(int(direct.group(1)), 0), w - 1),
+                min(max(int(direct.group(2)), 0), h - 1),
+            ]
+        ref_expr = DIRECT_COORDS.sub("", ref_expr)
         key = (ref_expr, hash(to_bytes(obs["screenshot"])))
         if key in self._coord_cache:
             return self._coord_cache[key]
@@ -318,6 +324,7 @@ class OSWorldACI(ACI):
     ) -> List[int]:
         with self._ocr_lock:  # both ends of a highlight share one OCR pass
             ocr_table, elements = ocr_elements(to_bytes(obs["screenshot"]))
+        phrase = DIRECT_COORDS.sub("", phrase)
 
         alignment_prompt = ""
         if alignment == "start":
@@ -348,7 +355,12 @@ class OSWorldACI(ACI):
                 elem["left"] + (elem["width"] // 2),
                 elem["top"] + (elem["height"] // 2),
             ]
-        return coords
+        # OCR boxes are in screenshot pixels; clicks are in screen pixels
+        shot_w, shot_h = Image.open(BytesIO(to_bytes(obs["screenshot"]))).size
+        return [
+            round(coords[0] * self.width / shot_w),
+            round(coords[1] * self.height / shot_h),
+        ]
 
     def assign_screenshot(self, obs: Dict):
         self.obs = obs

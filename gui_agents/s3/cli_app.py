@@ -22,6 +22,7 @@ logger = logging.getLogger("desktopenv")
 pyautogui.PAUSE = 0.02
 
 paused = False
+pause_count = 0  # bumped on every pause, so the loop knows to look again
 
 GENERAL_GROUNDING_PROMPT = (
     "The screenshot is {grounding_width}x{grounding_height} pixels. Find this "
@@ -52,7 +53,8 @@ def get_char():
 
 def signal_handler(signum, frame):
     """Ctrl+C pauses; Ctrl+C again quits, Esc resumes."""
-    global paused
+    global paused, pause_count
+    pause_count += 1
     if paused:
         print("\n\n🛑 Exiting...")
         sys.exit(0)
@@ -122,7 +124,10 @@ def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float 
             logger.info("EXECUTING CODE: %s", action)
             exec(action)
         # The next screenshot is taken once the screen stops changing
+        pauses = pause_count
         screenshot = settled_screen(size, max_wait=settle)
+        if pause_count != pauses:  # the screen may have changed while paused
+            screenshot = grab_screen(size)
 
 
 DEFAULTS = {
@@ -161,8 +166,7 @@ def parse_args(argv=None):
     add("--model_temperature", type=float, help="Fix the temperature (o3 needs 1.0)")
     add(
         "--thinking",
-        action="store_true",
-        default=None,
+        action=argparse.BooleanOptionalAction,
         help="Anthropic extended thinking (slower, sometimes more accurate)",
     )
     add(
@@ -179,8 +183,7 @@ def parse_args(argv=None):
     add("--max_trajectory_length", type=int, help="Screenshots kept in context (3)")
     add(
         "--enable_reflection",
-        action="store_true",
-        default=None,
+        action=argparse.BooleanOptionalAction,
         help="A reflection call per step (slower)",
     )
     add("--max_steps", type=int, help="Steps before giving up (15)")
@@ -196,11 +199,10 @@ def parse_args(argv=None):
     )
     add(
         "--enable_local_env",
-        action="store_true",
-        default=None,
+        action=argparse.BooleanOptionalAction,
         help="Let the code agent run code on this computer (WARNING: arbitrary code)",
     )
-    add("--debug", action="store_true", default=None)
+    add("--debug", action=argparse.BooleanOptionalAction)
     args = p.parse_args(argv)
 
     words = args.task or ([args.task_flag] if args.task_flag else [])
@@ -210,7 +212,21 @@ def parse_args(argv=None):
 
 
 def apply_config(args, config):
-    """Flags win, then the saved setup, then the defaults."""
+    """Flags win, then the saved setup, then the defaults. A provider given as
+    a flag doesn't inherit the saved provider's model, URL or key."""
+    config = dict(config)
+    if args.provider and args.provider != config.get("provider"):
+        for name in ("model", "model_url", "model_api_key"):
+            config.pop(name, None)
+        if args.model is None:
+            from gui_agents.s3.setup_wizard import PROVIDERS
+
+            models = PROVIDERS.get(args.provider, (None, None, []))[2]
+            if models:
+                args.model = models[0][0]
+    if args.ground_provider and args.ground_provider != config.get("ground_provider"):
+        for name in ("ground_model", "ground_url", "ground_api_key"):
+            config.pop(name, None)
     for name in vars(args):
         if getattr(args, name) is None:
             setattr(args, name, config.get(name, DEFAULTS.get(name)))
@@ -272,7 +288,8 @@ def main():
         if args.provider == "anthropic":
             # Claude shrinks images over ~1.15 megapixels before it sees them;
             # send one already that size so its pixels are ours.
-            side = min(side, int((1_150_000 * max(size) / min(size)) ** 0.5))
+            # and over 1568px on the long side
+            side = min(side, 1568, int((1_150_000 * max(size) / min(size)) ** 0.5))
             engine_params["image_max_side"] = side
         elif args.provider not in ("openai", "azure"):
             print(

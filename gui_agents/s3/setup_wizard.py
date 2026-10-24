@@ -4,6 +4,7 @@ arrow keys, and save it so later runs are one line."""
 import getpass
 import json
 import os
+import re
 import sys
 
 CONFIG_PATH = os.path.join(
@@ -140,6 +141,8 @@ def confirm(question: str, default: bool = False) -> bool:
 
 
 def run_setup() -> dict:
+    if os.name == "nt":
+        os.system("")  # turns on ANSI colours and cursor moves in the Windows console
     print(f"\n{BOLD}Agent TC setup{RESET}  {DIM}(saved to {CONFIG_PATH}){RESET}\n")
     keys = list(PROVIDERS)
     # Start on a provider whose key is already set
@@ -191,12 +194,19 @@ def run_setup() -> dict:
         config["ground_provider"] = servers[
             select("Where is it served?", ["Hugging Face endpoint", "vLLM", "Ollama"])
         ]
-        config["ground_url"] = ask("Grounding server URL:", "http://localhost:8080")
+        default_url = {
+            "huggingface": "http://localhost:8080",
+            "vllm": "http://localhost:8000/v1",
+            "ollama": "http://localhost:11434",
+        }[config["ground_provider"]]
+        config["ground_url"] = ask("Grounding server URL:", default_url)
         config["ground_model"] = ask("Grounding model name:", "ui-tars-1.5-7b")
-        width, height = (
-            ask("Its coordinate resolution:", "1920x1080").lower().split("x")
-        )
-        config["grounding_width"], config["grounding_height"] = int(width), int(height)
+        while True:
+            numbers = re.findall(r"\d+", ask("Its coordinate resolution:", "1920x1080"))
+            if len(numbers) == 2:
+                break
+            print("  Two numbers please, like 1920x1080")
+        config["grounding_width"], config["grounding_height"] = map(int, numbers)
         if config["ground_provider"] == "huggingface" and not os.getenv("HF_TOKEN"):
             token = ask("Hugging Face token (HF_TOKEN):", secret=True)
             if token:

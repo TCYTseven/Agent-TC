@@ -103,6 +103,16 @@ class TestStep(unittest.TestCase):
         agent.predict("press ok", {"screenshot": screenshot()})
         self.assertEqual(aci.grounding_model.engine.calls, 1)
 
+    def test_direct_coordinates_tolerate_punctuation_and_are_clamped(self):
+        params = {"engine_type": "openai", "model": "gpt-4o", "api_key": "x"}
+        ground = dict(params, grounding_width=1000, grounding_height=500)
+        aci = OSWorldACI(
+            None, "linux", params, ground, width=1000, height=500, direct_coords=True
+        )
+        obs = {"screenshot": screenshot()}
+        self.assertEqual(aci.generate_coords("OK button @(10, 20).", obs), [10, 20])
+        self.assertEqual(aci.generate_coords("OK @(5000, 900)", obs), [999, 499])
+
 
 if __name__ == "__main__":
     unittest.main()
