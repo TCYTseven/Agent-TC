@@ -8,11 +8,10 @@ import sys
 import time
 
 import pyautogui
-from PIL import Image
 
 from gui_agents.s3.agents.agent_s import AgentS3
 from gui_agents.s3.agents.grounding import OSWorldACI
-from gui_agents.s3.utils.images import jpeg_bytes
+from gui_agents.s3.utils.screen import grab_screen, settled_screen
 from gui_agents.s3.utils.local_env import LocalEnv
 
 current_platform = platform.system().lower()
@@ -23,6 +22,7 @@ logger = logging.getLogger("desktopenv")
 pyautogui.PAUSE = 0.02
 
 paused = False
+pause_count = 0  # bumped on every pause, so the loop knows to look again
 
 GENERAL_GROUNDING_PROMPT = (
     "The screenshot is {grounding_width}x{grounding_height} pixels. Find this "
@@ -53,9 +53,10 @@ def get_char():
 
 def signal_handler(signum, frame):
     """Ctrl+C pauses; Ctrl+C again quits, Esc resumes."""
-    global paused
+    global paused, pause_count
+    pause_count += 1
     if paused:
-        print("\n\n🛑 Exiting Agent-S...")
+        print("\n\n🛑 Exiting...")
         sys.exit(0)
     paused = True
     print("\n\n🔸 Paused. Ctrl+C again to quit, Esc to resume.")
@@ -65,7 +66,7 @@ def signal_handler(signum, frame):
         except KeyboardInterrupt:
             sys.exit(0)
         if ord(char) == 3:
-            print("\n\n🛑 Exiting Agent-S...")
+            print("\n\n🛑 Exiting...")
             sys.exit(0)
         if ord(char) == 27:
             print("\n\n▶️  Resuming...")
@@ -92,46 +93,24 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     return int(width * scale), int(height * scale)
 
 
-def grab_screen(size) -> bytes:
-    """Screenshot as JPEG bytes. mss is several times faster than pyautogui's
-    screenshot on macOS and Linux; pyautogui is the fallback."""
-    img = None
-    try:
-        import mss
-
-        with mss.mss() as sct:
-            shot = sct.grab(sct.monitors[1])
-        # Use it only if it is the whole screen pyautogui clicks on (with a
-        # second monitor the primary one alone is a different shape); retina
-        # captures are 2x, which keeps the shape.
-        w, h = pyautogui.size()
-        if abs(shot.size[0] / shot.size[1] - w / h) < 0.01:
-            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    except Exception:
-        pass
-    if img is None:
-        img = pyautogui.screenshot()
-    if img.size != size:
-        img = img.resize(size, Image.BILINEAR)
-    return jpeg_bytes(img)
-
-
 def notify_done():
     if current_platform == "darwin":
         os.system(
-            'osascript -e \'display notification "Task Completed" with title "Agent S"\''
+            'osascript -e \'display notification "Task Completed" with title "Agent TC"\''
         )
     elif current_platform == "linux":
-        os.system("notify-send 'Agent S' 'Task Completed' 2>/dev/null")
+        os.system("notify-send 'Agent TC' 'Task Completed' 2>/dev/null")
 
 
-def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float = 0.5):
+def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float = 1.0):
+    screenshot = grab_screen(size)
     for step in range(max_steps):
         while paused:
             time.sleep(0.1)
         started = time.time()
-        obs = {"screenshot": grab_screen(size)}
-        info, code = agent.predict(instruction=instruction, observation=obs)
+        info, code = agent.predict(
+            instruction=instruction, observation={"screenshot": screenshot}
+        )
         action = code[0]
         print(f"🔄 Step {step + 1}/{max_steps} ({time.time() - started:.1f}s)")
 
@@ -139,91 +118,132 @@ def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float 
         if signal_word in ("DONE", "FAIL"):
             notify_done()
             break
-        if signal_word in ("NEXT", "WAIT"):
-            continue
-        while paused:
-            time.sleep(0.1)
-        logger.info("EXECUTING CODE: %s", action)
-        exec(action)
-        # Let the UI react before the next screenshot
-        time.sleep(settle)
+        if signal_word not in ("NEXT", "WAIT"):
+            while paused:
+                time.sleep(0.1)
+            logger.info("EXECUTING CODE: %s", action)
+            exec(action)
+        # The next screenshot is taken once the screen stops changing
+        pauses = pause_count
+        screenshot = settled_screen(size, max_wait=settle)
+        if pause_count != pauses:  # the screen may have changed while paused
+            screenshot = grab_screen(size)
+
+
+DEFAULTS = {
+    "provider": "openai",
+    "model": "gpt-5-2025-08-07",
+    "model_url": "",
+    "model_api_key": "",
+    "reasoning_effort": "low",
+    "ground_url": "",
+    "ground_api_key": "",
+    "max_trajectory_length": 3,
+    "max_steps": 15,
+    "settle": 1.0,
+    "image_max_side": 1280,
+    "thinking": False,
+    "enable_reflection": False,
+    "enable_local_env": False,
+    "debug": False,
+}
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        prog="agent-tc",
+        description='Do a task on this computer: agent-tc "open a new browser tab". '
+        "The first run asks a few questions; `agent-tc setup` asks them again. "
+        "Flags override the saved choices.",
+    )
+    p.add_argument("task", nargs="*", help="The task, or `setup`")
+    p.add_argument("--task", dest="task_flag", help=argparse.SUPPRESS)
+    add = p.add_argument
+    add("--provider", help="anthropic, openai, gemini, open_router, ollama, vllm, ...")
+    add("--model")
+    add("--model_url", help="URL of the main model API")
+    add("--model_api_key")
+    add("--model_temperature", type=float, help="Fix the temperature (o3 needs 1.0)")
+    add(
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        help="Anthropic extended thinking (slower, sometimes more accurate)",
+    )
+    add(
+        "--reasoning_effort", help="OpenAI reasoning models: minimal, low, medium, high"
+    )
+    add(
+        "--ground_provider", help="Grounding model provider; omit to use the main model"
+    )
+    add("--ground_url")
+    add("--ground_api_key")
+    add("--ground_model")
+    add("--grounding_width", type=int, help="The grounding model's coordinate width")
+    add("--grounding_height", type=int)
+    add("--max_trajectory_length", type=int, help="Screenshots kept in context (3)")
+    add(
+        "--enable_reflection",
+        action=argparse.BooleanOptionalAction,
+        help="A reflection call per step (slower)",
+    )
+    add("--max_steps", type=int, help="Steps before giving up (15)")
+    add(
+        "--settle",
+        type=float,
+        help="Most seconds to wait for the screen to stop changing (1.0)",
+    )
+    add(
+        "--image_max_side",
+        type=int,
+        help="Longest side of screenshots sent to the model (1280; 0 = full size)",
+    )
+    add(
+        "--enable_local_env",
+        action=argparse.BooleanOptionalAction,
+        help="Let the code agent run code on this computer (WARNING: arbitrary code)",
+    )
+    add("--debug", action=argparse.BooleanOptionalAction)
+    args = p.parse_args(argv)
+
+    words = args.task or ([args.task_flag] if args.task_flag else [])
+    args.run_setup = words == ["setup"]
+    args.task = "" if args.run_setup else " ".join(words)
+    return p, args
+
+
+def apply_config(args, config):
+    """Flags win, then the saved setup, then the defaults. A provider given as
+    a flag doesn't inherit the saved provider's model, URL or key."""
+    config = dict(config)
+    if args.provider and args.provider != config.get("provider"):
+        for name in ("model", "model_url", "model_api_key"):
+            config.pop(name, None)
+        if args.model is None:
+            from gui_agents.s3.setup_wizard import PROVIDERS
+
+            models = PROVIDERS.get(args.provider, (None, None, []))[2]
+            if models:
+                args.model = models[0][0]
+    if args.ground_provider and args.ground_provider != config.get("ground_provider"):
+        for name in ("ground_model", "ground_url", "ground_api_key"):
+            config.pop(name, None)
+    for name in vars(args):
+        if getattr(args, name) is None:
+            setattr(args, name, config.get(name, DEFAULTS.get(name)))
+    return args
 
 
 def main():
-    p = argparse.ArgumentParser(description="Run Agent S3 on this computer.")
-    p.add_argument(
-        "--provider",
-        default="openai",
-        help="openai, anthropic, gemini, ollama, vllm, ...",
-    )
-    p.add_argument("--model", default="gpt-5-2025-08-07")
-    p.add_argument("--model_url", default="", help="URL of the main model API")
-    p.add_argument("--model_api_key", default="")
-    p.add_argument(
-        "--model_temperature",
-        type=float,
-        default=None,
-        help="Fix the temperature (o3 needs 1.0)",
-    )
-    p.add_argument(
-        "--thinking",
-        action="store_true",
-        help="Anthropic extended thinking (slower, sometimes more accurate)",
-    )
-    p.add_argument(
-        "--reasoning_effort",
-        default="low",
-        help="OpenAI reasoning models: minimal, low, medium or high",
-    )
+    from gui_agents.s3.setup_wizard import load_config, run_setup
 
-    p.add_argument(
-        "--ground_provider",
-        default=None,
-        help="Grounding model provider. Omit to ground with the main model.",
-    )
-    p.add_argument("--ground_url", default="")
-    p.add_argument("--ground_api_key", default="")
-    p.add_argument("--ground_model", default=None)
-    p.add_argument(
-        "--grounding_width",
-        type=int,
-        default=None,
-        help="Screenshot width after the grounding model's own rescaling",
-    )
-    p.add_argument("--grounding_height", type=int, default=None)
-
-    p.add_argument(
-        "--max_trajectory_length",
-        type=int,
-        default=3,
-        help="Screenshots kept in the model's context",
-    )
-    p.add_argument(
-        "--enable_reflection",
-        action="store_true",
-        help="Add a reflection call per step (slower)",
-    )
-    p.add_argument("--max_steps", type=int, default=15)
-    p.add_argument(
-        "--settle",
-        type=float,
-        default=0.5,
-        help="Seconds to wait after an action before the next screenshot",
-    )
-    p.add_argument(
-        "--image_max_side",
-        type=int,
-        default=1280,
-        help="Longest side of screenshots sent to the main model (0 = full size)",
-    )
-    p.add_argument(
-        "--enable_local_env",
-        action="store_true",
-        help="Let the code agent run code on this computer (WARNING: arbitrary code)",
-    )
-    p.add_argument("--debug", action="store_true")
-    p.add_argument("--task", help="The task. Omit for an interactive prompt.")
-    args = p.parse_args()
+    p, args = parse_args()
+    config = load_config()
+    # First run (and nothing given on the command line): ask, like create-next-app
+    if args.run_setup or (not config and args.provider is None and sys.stdin.isatty()):
+        config = run_setup()
+        if args.run_setup:
+            return
+    apply_config(args, config)
 
     if args.thinking and args.provider != "anthropic":
         p.error("--thinking is only supported with --provider anthropic")
@@ -268,7 +288,8 @@ def main():
         if args.provider == "anthropic":
             # Claude shrinks images over ~1.15 megapixels before it sees them;
             # send one already that size so its pixels are ours.
-            side = min(side, int((1_150_000 * max(size) / min(size)) ** 0.5))
+            # and over 1568px on the long side
+            side = min(side, 1568, int((1_150_000 * max(size) / min(size)) ** 0.5))
             engine_params["image_max_side"] = side
         elif args.provider not in ("openai", "azure"):
             print(
@@ -300,6 +321,9 @@ def main():
         engine_params_for_grounding=ground_params,
         width=screen_width,
         height=screen_height,
+        # Without a grounding model the planner, which already sees the same
+        # image, writes the coordinates itself: one model call per click.
+        direct_coords=not args.ground_provider,
     )
     agent = AgentS3(
         engine_params,
@@ -309,19 +333,29 @@ def main():
         enable_reflection=args.enable_reflection,
     )
 
+    # Open the API connections while the user types or the first screenshot is taken
+    for engine in {
+        id(e): e
+        for e in (
+            agent.executor.generator_agent.engine,
+            grounding_agent.grounding_model.engine,
+        )
+    }.values():
+        engine.warm()
+
     def run(task):
         agent.reset()
         started = time.time()
         run_agent(agent, task, size, args.max_steps, args.settle)
         print(f"⏱  Finished in {time.time() - started:.1f}s")
 
-    if args.task and args.task.strip():
+    if args.task.strip():
         run(args.task)
         return
     while True:
-        run(input("Query: "))
-        if input("Another query? (y/n): ").lower() != "y":
-            break
+        task = input("What should it do? ").strip()
+        if task:
+            run(task)
 
 
 if __name__ == "__main__":
