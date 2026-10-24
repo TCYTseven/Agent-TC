@@ -7,7 +7,7 @@ import unittest
 from PIL import Image
 
 from gui_agents.s3.agents.agent_s import AgentS3
-from gui_agents.s3.agents.grounding import OSWorldACI
+from gui_agents.s3.agents.grounding import OSWorldACI, PixelACI
 
 
 class FakeEngine:
@@ -83,35 +83,57 @@ class TestStep(unittest.TestCase):
         )
         self.assertEqual(images, 2)
 
-    def test_direct_coordinates_skip_grounding(self):
-        params = {"engine_type": "openai", "model": "gpt-4o", "api_key": "x"}
-        ground = dict(params, grounding_width=1000, grounding_height=500)
-        aci = OSWorldACI(
-            None, "linux", params, ground, width=2000, height=1000, direct_coords=True
-        )
-        aci.grounding_model.engine = FakeEngine(["(1, 1)"])
-        agent = AgentS3(params, aci, platform="linux")
-        self.assertIn("@(x, y)", agent.executor.generator_agent.system_prompt)
-        agent.executor.generator_agent.engine = FakeEngine(
-            ['```python\nagent.click("The OK button @(250, 100)", 1, "left")\n```']
-        )
-        _, actions = agent.predict("press ok", {"screenshot": screenshot()})
-        self.assertEqual(aci.grounding_model.engine.calls, 0)
-        self.assertIn("pyautogui.click(500, 200", actions[0])
-        # A description without coordinates still falls back to grounding
-        agent.executor.generator_agent.engine = FakeEngine([CLICK])
+    def test_osworld_prompt_is_built_once_per_task(self):
+        agent, _ = build([CLICK])
         agent.predict("press ok", {"screenshot": screenshot()})
-        self.assertEqual(aci.grounding_model.engine.calls, 1)
+        prompt = agent.executor.generator_agent.system_prompt
+        self.assertIn("`press ok`", prompt)
+        self.assertNotIn("TASK_DESCRIPTION", prompt)
 
-    def test_direct_coordinates_tolerate_punctuation_and_are_clamped(self):
-        params = {"engine_type": "openai", "model": "gpt-4o", "api_key": "x"}
-        ground = dict(params, grounding_width=1000, grounding_height=500)
-        aci = OSWorldACI(
-            None, "linux", params, ground, width=1000, height=500, direct_coords=True
+
+def build_pixel(plan_replies, normalized=False):
+    params = {"engine_type": "openai", "model": "gpt-4o", "api_key": "x"}
+    aci = PixelACI(None, "linux", params, 2000, 1000, 1000, 500, normalized)
+    agent = AgentS3(params, aci, platform="linux")
+    agent.executor.generator_agent.engine = FakeEngine(plan_replies)
+    return agent, aci
+
+
+class TestPixelACI(unittest.TestCase):
+    def test_one_model_call_and_pixels_scaled_to_the_screen(self):
+        agent, _ = build_pixel(["Thought: ok.\n```python\nagent.click(250, 100)\n```"])
+        _, actions = agent.predict("press ok", {"screenshot": screenshot()})
+        self.assertEqual(agent.executor.generator_agent.engine.calls, 1)
+        self.assertIn("pyautogui.click(500, 200", actions[0])
+
+    def test_coordinates_are_clamped(self):
+        _, aci = build_pixel([CLICK])
+        self.assertEqual(aci.to_screen(5000, -3), [1998, 0])
+
+    def test_normalized_coordinates(self):
+        _, aci = build_pixel([CLICK], normalized=True)
+        self.assertEqual(aci.to_screen(500, 500), [1000, 500])
+
+    def test_type_drag_and_scroll(self):
+        _, aci = build_pixel([CLICK])
+        self.assertIn("pyautogui.click(200, 400)", aci.type("hi", 100, 200, enter=True))
+        self.assertNotIn("click", aci.type("hi"))
+        self.assertIn("dragTo(400, 600", aci.drag_and_drop(10, 20, 200, 300))
+        self.assertIn("vscroll(-3)", aci.scroll(10, 10, -3))
+
+    def test_prompt_is_short_and_fits_the_task(self):
+        agent, _ = build_pixel([CLICK])
+        executor = agent.executor
+        simple = executor._system_prompt("open the calculator")
+        self.assertIn("1000x500 pixels", simple)
+        self.assertIn("agent.click(x, y", simple)
+        for left_out in ("drag_and_drop", "highlight_text_span", "call_code_agent"):
+            self.assertNotIn(left_out, simple)
+        self.assertLess(len(simple), 2500)
+        self.assertIn("drag_and_drop", executor._system_prompt("drag the file"))
+        self.assertIn(
+            "0 to 1000", build_pixel([CLICK], True)[0].executor._system_prompt("x")
         )
-        obs = {"screenshot": screenshot()}
-        self.assertEqual(aci.generate_coords("OK button @(10, 20).", obs), [10, 20])
-        self.assertEqual(aci.generate_coords("OK @(5000, 900)", obs), [999, 499])
 
 
 if __name__ == "__main__":

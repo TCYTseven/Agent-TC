@@ -47,22 +47,6 @@ def run_agent_s(task, max_steps=15, enable_reflection=True, enable_local_env=Fal
         "--task", task,
     ]
     
-    # Add optional grounding configuration from environment variables
-    ground_url = os.environ.get("AGENT_S_GROUND_URL")
-    ground_api_key = os.environ.get("AGENT_S_GROUND_API_KEY")
-    ground_model = os.environ.get("AGENT_S_GROUND_MODEL", "ui-tars-1.5-7b")
-    grounding_width = os.environ.get("AGENT_S_GROUNDING_WIDTH", "1920")
-    grounding_height = os.environ.get("AGENT_S_GROUNDING_HEIGHT", "1080")
-    
-    if ground_url:
-        cmd.extend(["--ground_provider", "huggingface"])
-        cmd.extend(["--ground_url", ground_url])
-        cmd.extend(["--ground_model", ground_model])
-        cmd.extend(["--grounding_width", grounding_width])
-        cmd.extend(["--grounding_height", grounding_height])
-        if ground_api_key:
-            cmd.extend(["--ground_api_key", ground_api_key])
-
     if enable_reflection:
         cmd.append("--enable_reflection")
 

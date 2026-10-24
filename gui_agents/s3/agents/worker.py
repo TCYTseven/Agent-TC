@@ -3,7 +3,7 @@ import re
 import textwrap
 from typing import Dict, List, Optional, Tuple
 
-from gui_agents.s3.agents.grounding import ACI
+from gui_agents.s3.agents.grounding import ACI, PixelACI
 from gui_agents.s3.core.module import BaseModule
 from gui_agents.s3.memory.procedural_memory import PROCEDURAL_MEMORY
 from gui_agents.s3.utils.common_utils import (
@@ -79,22 +79,26 @@ class Worker(BaseModule):
         self.enable_reflection = enable_reflection
         self.reset()
 
-    def reset(self):
+    def _system_prompt(self, instruction: str) -> str:
         skipped_actions = [] if self.platform == "linux" else ["set_cell_values"]
         env = getattr(self.grounding_agent, "env", None)
         if not getattr(env, "controller", None):
             skipped_actions.append("call_code_agent")
-
-        sys_prompt = PROCEDURAL_MEMORY.construct_simple_worker_procedural_memory(
-            type(self.grounding_agent), skipped_actions=skipped_actions
-        ).replace("CURRENT_OS", self.platform)
-        if getattr(self.grounding_agent, "direct_coords", False):
-            ground = self.grounding_agent.engine_params_for_grounding
-            w, h = ground["grounding_width"], ground["grounding_height"]
-            sys_prompt += PROCEDURAL_MEMORY.DIRECT_COORDS_NOTE.format(
-                width=w, height=h, ex1=w * 3 // 5, ey1=h * 4 // 5
+        if isinstance(self.grounding_agent, PixelACI):
+            # Built per task: actions the task doesn't call for are left out
+            return PROCEDURAL_MEMORY.construct_pixel_worker_prompt(
+                self.grounding_agent, instruction, self.platform, skipped_actions
             )
+        return (
+            PROCEDURAL_MEMORY.construct_simple_worker_procedural_memory(
+                type(self.grounding_agent), skipped_actions=skipped_actions
+            )
+            .replace("CURRENT_OS", self.platform)
+            .replace("TASK_DESCRIPTION", instruction)
+        )
 
+    def reset(self):
+        sys_prompt = self._system_prompt("TASK_DESCRIPTION")
         self.generator_agent = self._create_agent(sys_prompt)
         self.reflection_agent = (
             self._create_agent(PROCEDURAL_MEMORY.REFLECTION_ON_TRAJECTORY)
@@ -216,11 +220,7 @@ class Worker(BaseModule):
             else ""
         )
         if self.turn_count == 0:
-            self.generator_agent.add_system_prompt(
-                self.generator_agent.system_prompt.replace(
-                    "TASK_DESCRIPTION", instruction
-                )
-            )
+            self.generator_agent.add_system_prompt(self._system_prompt(instruction))
 
         reflection, reflection_thoughts = self._generate_reflection(instruction, obs)
         if reflection:

@@ -1,6 +1,6 @@
 # Supported models
 
-Set `engine_type` (the CLI's `--provider` / `--ground_provider`) to one of these. Keys and URLs can be passed as `api_key` / `base_url` (`--model_api_key` / `--model_url`) instead of environment variables.
+Set `engine_type` (the CLI's `--provider`) to one of these. Keys and URLs can be passed as `api_key` / `base_url` (`--model_api_key` / `--model_url`) instead of environment variables.
 
 | engine_type | API key variable | URL variable (default) |
 |---|---|---|

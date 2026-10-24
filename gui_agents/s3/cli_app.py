@@ -9,8 +9,9 @@ import time
 
 import pyautogui
 
+from gui_agents.s3 import fast_path
 from gui_agents.s3.agents.agent_s import AgentS3
-from gui_agents.s3.agents.grounding import OSWorldACI
+from gui_agents.s3.agents.grounding import PixelACI
 from gui_agents.s3.utils.screen import grab_screen, settled_screen
 from gui_agents.s3.utils.local_env import LocalEnv
 
@@ -23,11 +24,6 @@ pyautogui.PAUSE = 0.02
 
 paused = False
 pause_count = 0  # bumped on every pause, so the loop knows to look again
-
-GENERAL_GROUNDING_PROMPT = (
-    "The screenshot is {grounding_width}x{grounding_height} pixels. Find this "
-    "element: {ref_expr}\nReply with only its center as pixel coordinates (x, y)."
-)
 
 
 def get_char():
@@ -102,6 +98,29 @@ def notify_done():
         os.system("notify-send 'Agent TC' 'Task Completed' 2>/dev/null")
 
 
+def run_fast_path(aci, task: str, size):
+    """Run the plain steps at the start of the task locally. Returns the
+    instruction for the model, or "" when nothing is left for it."""
+    steps, rest = fast_path.plan(task, aci, current_platform)
+    if not steps:
+        return task
+    label = None
+    for step in steps:
+        while paused:
+            time.sleep(0.1)
+        if step.label != label:
+            label = step.label
+            print(f"⚡ {label} (no model call)")
+        logger.info("EXECUTING CODE: %s", step.code)
+        exec(step.code)
+        settled_screen(size, max_wait=step.settle, min_wait=min(1.0, step.settle / 3))
+    if not rest:
+        notify_done()
+        return ""
+    done = "; ".join(dict.fromkeys(s.label for s in steps))
+    return f"{task}\n(Already done for you: {done}. Continue from the current screen.)"
+
+
 def run_agent(agent, instruction: str, size, max_steps: int = 15, settle: float = 1.0):
     screenshot = grab_screen(size)
     for step in range(max_steps):
@@ -136,8 +155,6 @@ DEFAULTS = {
     "model_url": "",
     "model_api_key": "",
     "reasoning_effort": "low",
-    "ground_url": "",
-    "ground_api_key": "",
     "max_trajectory_length": 3,
     "max_steps": 15,
     "settle": 1.0,
@@ -145,8 +162,12 @@ DEFAULTS = {
     "thinking": False,
     "enable_reflection": False,
     "enable_local_env": False,
+    "fast_path": True,
     "debug": False,
 }
+
+# Models that answer in 0-1000 normalised coordinates rather than pixels
+NORMALIZED_PROVIDERS = {"gemini"}
 
 
 def parse_args(argv=None):
@@ -173,13 +194,10 @@ def parse_args(argv=None):
         "--reasoning_effort", help="OpenAI reasoning models: minimal, low, medium, high"
     )
     add(
-        "--ground_provider", help="Grounding model provider; omit to use the main model"
+        "--normalized_coords",
+        action=argparse.BooleanOptionalAction,
+        help="The model answers in 0-1000 coordinates, not pixels (on for gemini)",
     )
-    add("--ground_url")
-    add("--ground_api_key")
-    add("--ground_model")
-    add("--grounding_width", type=int, help="The grounding model's coordinate width")
-    add("--grounding_height", type=int)
     add("--max_trajectory_length", type=int, help="Screenshots kept in context (3)")
     add(
         "--enable_reflection",
@@ -201,6 +219,11 @@ def parse_args(argv=None):
         "--enable_local_env",
         action=argparse.BooleanOptionalAction,
         help="Let the code agent run code on this computer (WARNING: arbitrary code)",
+    )
+    add(
+        "--fast_path",
+        action=argparse.BooleanOptionalAction,
+        help="Run plain steps like 'open chrome' without a model call (on)",
     )
     add("--debug", action=argparse.BooleanOptionalAction)
     args = p.parse_args(argv)
@@ -224,9 +247,6 @@ def apply_config(args, config):
             models = PROVIDERS.get(args.provider, (None, None, []))[2]
             if models:
                 args.model = models[0][0]
-    if args.ground_provider and args.ground_provider != config.get("ground_provider"):
-        for name in ("ground_model", "ground_url", "ground_api_key"):
-            config.pop(name, None)
     for name in vars(args):
         if getattr(args, name) is None:
             setattr(args, name, config.get(name, DEFAULTS.get(name)))
@@ -244,6 +264,10 @@ def main():
         if args.run_setup:
             return
     apply_config(args, config)
+    if config.get("ground_provider"):
+        print(
+            "Note: the saved grounding server is no longer used; the model clicks itself."
+        )
 
     if args.thinking and args.provider != "anthropic":
         p.error("--thinking is only supported with --provider anthropic")
@@ -251,7 +275,21 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     screen_width, screen_height = pyautogui.size()
-    size = scale_screen_dimensions(screen_width, screen_height, max_dim_size=2400)
+    # The model clicks in pixels of the screenshot it sees, so capture at
+    # exactly that size: nothing is resized again before upload.
+    side = args.image_max_side or max(screen_width, screen_height)
+    if args.provider == "anthropic":
+        # Claude shrinks images over ~1.15 megapixels or 1568px on the long
+        # side before it sees them; send one already that size so its pixels
+        # are ours.
+        long_side, short_side = max(screen_width, screen_height), min(
+            screen_width, screen_height
+        )
+        side = min(side, 1568, int((1_150_000 * long_side / short_side) ** 0.5))
+    size = scale_screen_dimensions(screen_width, screen_height, side)
+    normalized = args.normalized_coords
+    if normalized is None:
+        normalized = args.provider in NORMALIZED_PROVIDERS
 
     engine_params = {
         "engine_type": args.provider,
@@ -261,51 +299,12 @@ def main():
         "temperature": args.model_temperature,
         "thinking": args.thinking,
         "reasoning_effort": args.reasoning_effort,
-        "image_max_side": args.image_max_side,
+        "image_max_side": 0,
     }
-
-    if args.ground_provider:
-        missing = [
-            n
-            for n in ("ground_model", "grounding_width", "grounding_height")
-            if getattr(args, n) is None
-        ]
-        if missing:
-            p.error(
-                f"--ground_provider also needs: {', '.join('--' + m for m in missing)}"
-            )
-        ground_params = {
-            "engine_type": args.ground_provider,
-            "model": args.ground_model,
-            "base_url": args.ground_url,
-            "api_key": args.ground_api_key,
-            "grounding_width": args.grounding_width,
-            "grounding_height": args.grounding_height,
-        }
-    else:
-        # Ground with the main model: it answers in pixels of the image it sees.
-        side = args.image_max_side or max(size)
-        if args.provider == "anthropic":
-            # Claude shrinks images over ~1.15 megapixels before it sees them;
-            # send one already that size so its pixels are ours.
-            # and over 1568px on the long side
-            side = min(side, 1568, int((1_150_000 * max(size) / min(size)) ** 0.5))
-            engine_params["image_max_side"] = side
-        elif args.provider not in ("openai", "azure"):
-            print(
-                "Note: some models answer in 0-1000 normalised coordinates rather "
-                "than pixels; if clicks land off, add a grounding model "
-                "(--ground_provider)."
-            )
-        ground_w, ground_h = scale_screen_dimensions(*size, side)
-        ground_params = dict(
-            engine_params,
-            thinking=False,
-            grounding_width=ground_w,
-            grounding_height=ground_h,
-            grounding_prompt=GENERAL_GROUNDING_PROMPT,
-        )
-        print(f"Grounding with {args.model} at {ground_w}x{ground_h}.")
+    print(
+        f"{args.model} clicks by reading a {size[0]}x{size[1]} screenshot"
+        + (" (0-1000 coordinates)." if normalized else ".")
+    )
 
     local_env = None
     if args.enable_local_env:
@@ -314,39 +313,33 @@ def main():
         )
         local_env = LocalEnv()
 
-    grounding_agent = OSWorldACI(
-        env=local_env,
-        platform=current_platform,
-        engine_params_for_generation=engine_params,
-        engine_params_for_grounding=ground_params,
+    aci = PixelACI(
+        local_env,
+        current_platform,
+        engine_params,
         width=screen_width,
         height=screen_height,
-        # Without a grounding model the planner, which already sees the same
-        # image, writes the coordinates itself: one model call per click.
-        direct_coords=not args.ground_provider,
+        coord_width=size[0],
+        coord_height=size[1],
+        normalized=normalized,
     )
     agent = AgentS3(
         engine_params,
-        grounding_agent,
+        aci,
         platform=current_platform,
         max_trajectory_length=args.max_trajectory_length,
         enable_reflection=args.enable_reflection,
     )
 
-    # Open the API connections while the user types or the first screenshot is taken
-    for engine in {
-        id(e): e
-        for e in (
-            agent.executor.generator_agent.engine,
-            grounding_agent.grounding_model.engine,
-        )
-    }.values():
-        engine.warm()
+    # Open the API connection while the user types or the first screenshot is taken
+    agent.executor.generator_agent.engine.warm()
 
     def run(task):
         agent.reset()
         started = time.time()
-        run_agent(agent, task, size, args.max_steps, args.settle)
+        instruction = run_fast_path(aci, task, size) if args.fast_path else task
+        if instruction:
+            run_agent(agent, instruction, size, args.max_steps, args.settle)
         print(f"⏱  Finished in {time.time() - started:.1f}s")
 
     if args.task.strip():
