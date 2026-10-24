@@ -1,72 +1,36 @@
-We support the following APIs for MLLM inference: OpenAI, Anthropic, Gemini, Azure OpenAI, vLLM for local models, and Open Router. To use these APIs, you need to set the corresponding environment variables:
+# Supported models
 
-1. OpenAI
+Set `engine_type` (the CLI's `--provider` / `--ground_provider`) to one of these. Keys and URLs can be passed as `api_key` / `base_url` (`--model_api_key` / `--model_url`) instead of environment variables.
 
-```
-export OPENAI_API_KEY=<YOUR_API_KEY>
-```
+| engine_type | API key variable | URL variable (default) |
+|---|---|---|
+| `openai` | `OPENAI_API_KEY` | |
+| `anthropic` | `ANTHROPIC_API_KEY` | |
+| `gemini` | `GEMINI_API_KEY` | `GEMINI_ENDPOINT_URL` (`https://generativelanguage.googleapis.com/v1beta/openai/`) |
+| `azure` | `AZURE_OPENAI_API_KEY` | `AZURE_OPENAI_ENDPOINT`, plus `OPENAI_API_VERSION` |
+| `open_router` | `OPENROUTER_API_KEY` | `OPEN_ROUTER_ENDPOINT_URL` (`https://openrouter.ai/api/v1`) |
+| `huggingface` | `HF_TOKEN` | `HF_ENDPOINT_URL` (a TGI endpoint) |
+| `vllm` | `vLLM_API_KEY` (optional) | `vLLM_ENDPOINT_URL` |
+| `ollama` | none | `OLLAMA_HOST` (`/v1` is added) |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_ENDPOINT_URL` (`https://api.deepseek.com`) |
+| `qwen` | `QWEN_API_KEY` | `QWEN_ENDPOINT_URL` (DashScope) |
+| `parasail` | `PARASAIL_API_KEY` | `PARASAIL_ENDPOINT_URL` (`https://api.parasail.io/v1`) |
 
-2. Anthropic
+Every engine except `anthropic` speaks the OpenAI Chat Completions API, so any OpenAI-compatible server (LM Studio, llama.cpp, SGLang) works as `vllm` or `openai` with a `base_url`.
 
-```
-export ANTHROPIC_API_KEY=<YOUR_API_KEY>
-```
+Optional engine parameters:
 
-3. Gemini
-
-```
-export GEMINI_API_KEY=<YOUR_API_KEY>
-export GEMINI_ENDPOINT_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
-```
-
-4. OpenAI on Azure
-
-```
-export AZURE_OPENAI_API_BASE=<DEPLOYMENT_NAME>
-export AZURE_OPENAI_API_KEY=<YOUR_API_KEY>
-```
-
-5. vLLM for Local Models
-
-```
-export vLLM_ENDPOINT_URL=<YOUR_DEPLOYMENT_URL>
-```
-
-Alternatively you can directly pass the API keys into the engine_params argument while instantating the agent.
-
-6. Open Router
-
-```
-export OPENROUTER_API_KEY=<YOUR_API_KEY>
-export OPEN_ROUTER_ENDPOINT_URL="https://openrouter.ai/api/v1"
-```
+- `image_max_side`: longest side of images sent to this model; larger screenshots are shrunk to JPEG first.
+- `temperature`: forces a temperature on every call (o3 needs 1.0).
+- `thinking`: Anthropic extended thinking.
+- `reasoning_effort`: OpenAI reasoning models (gpt-5, o-series); defaults to `low`.
 
 ```python
-from gui_agents.s2_5.agents.agent_s import AgentS2_5
+from gui_agents.s3.core.mllm import LMMAgent
 
-engine_params = {
-    "engine_type": 'openai', # Allowed Values: 'openai', 'anthropic', 'gemini', 'azure_openai', 'vllm', 'open_router'
-    "model": 'gpt-5-2025-08-07', # Allowed Values: Any Vision and Language Model from the supported APIs
-}
-agent = AgentS2_5(
-    engine_params,
-    grounding_agent,
-    platform=current_platform,
-)
+agent = LMMAgent(engine_params={"engine_type": "openai", "model": "gpt-5-2025-08-07"})
+agent.add_message("Describe this screen.", image_content=screenshot_bytes, role="user")
+print(agent.get_response())
 ```
 
-To use the underlying Multimodal Agent (LMMAgent) which wraps LLMs with message handling functionality, you can use the following code snippet:
-
-```python
-from gui_agents.s2_5.core.mllm import LMMAgent
-
-engine_params = {
-    "engine_type": 'openai', # Allowed Values: 'openai', 'anthropic', 'gemini', 'azure_openai', 'vllm', 'open_router'
-    "model": 'gpt-5-2025-08-07', # Allowed Values: Any Vision and Language Model from the supported APIs
-    }
-agent = LMMAgent(
-    engine_params=engine_params,
-)
-```
-
-The `AgentS2_5` also utilizes this `LMMAgent` internally.
+`AgentS3` uses `LMMAgent` for every model it calls.

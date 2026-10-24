@@ -10,7 +10,7 @@
   🗨️ <a href="https://discord.gg/E2XfsK9fPV">[Discord]</a>
 </p>
 
-Agent S3 is the agent in the `gui-agents` package. It takes a natural-language task, looks at the screen, and completes the task by clicking, typing, and scrolling in ordinary desktop and web applications. It runs on macOS, Windows, and Linux.
+Agent S3 is the agent in the `gui-agents` package. It takes a natural-language task, looks at the screen, and completes the task by clicking, typing and scrolling in ordinary desktop and web applications. It runs on macOS, Windows and Linux.
 
 ## 🎯 Results
 
@@ -18,239 +18,142 @@ Agent S3 is the agent in the `gui-agents` package. It takes a natural-language t
   <img src="../../images/s3_results_new.png" alt="Agent S3 Results" width="700"/>
 </p>
 
-On OSWorld, Agent S3 alone reaches 66% in the 100-step setting, already exceeding the previous state of the art of 63.4% (GTA1 w/ GPT-5). With the addition of Behavior Best-of-N, performance climbs even higher to 72.6%, *surpassing* human-level performance on OSWorld (~72%)!
+On OSWorld, Agent S3 alone reaches 66% in the 100-step setting. With Behavior Best-of-N it reaches 72.6%, above human performance on OSWorld (about 72%). On WindowsAgentArena, accuracy rises from 50.2% with Agent S3 alone to 56.6% when selecting from 3 rollouts; on AndroidWorld, from 68.1% to 71.6%.
 
-Agent S3 also demonstrates strong zero-shot generalization! On WindowsAgentArena, accuracy rises from 50.2% using only Agent S3 to 56.6% by selecting from 3 rollouts. Similarly on AndroidWorld, performance improves from 68.1% to 71.6%
+These results were measured with reflection on and the original verbose prompt. The `osworld_setup/s3` scripts still turn reflection on; the CLI defaults are tuned for speed (see [Speed](#-speed)).
 
-## 🛠️ Installation & Setup
+## 🛠️ Install
 
-### Prerequisites
-- **Single Monitor**: Our agent is designed for single monitor screens
-- **Security**: The agent runs Python code to control your computer - use with care
-- **Supported Platforms**: Linux, Mac, and Windows
-
-
-### Installation
-To install Agent S3 without cloning the repository, run
 ```bash
-pip install gui-agents
-```
-If you would like to test Agent S3 while making changes, clone the repository and install using
-```
-pip install -e .
+pip install -e .          # from a clone, or: pip install gui-agents
+brew install tesseract    # or apt-get install tesseract-ocr; used to select text
 ```
 
-Don't forget to also `brew install tesseract`! Pytesseract requires this extra installation to work.
+Requirements: a single monitor, and care. The agent runs Python on your computer to move the mouse and type.
 
+Set the key for the provider you use:
 
-### API Configuration
-
-#### Option 1: Environment Variables
-Add to your `.bashrc` (Linux) or `.zshrc` (MacOS):
 ```bash
-export OPENAI_API_KEY=<YOUR_API_KEY>
-export ANTHROPIC_API_KEY=<YOUR_ANTHROPIC_API_KEY>
-export HF_TOKEN=<YOUR_HF_TOKEN>
+export OPENAI_API_KEY=...      # or ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, HF_TOKEN
 ```
 
-#### Option 2: Python Script
-```python
-import os
-os.environ["OPENAI_API_KEY"] = "<YOUR_API_KEY>"
+Every provider and its variables are in [models.md](../../models.md).
+
+## 🚀 Run
+
+**Fastest setup (one API key, nothing to host).** The main model does its own grounding:
+
+```bash
+agent_s --provider anthropic --model claude-sonnet-4-5 --task "Open a new browser tab"
 ```
 
-### Supported Models
-We support Azure OpenAI, Anthropic, Gemini, Open Router, and vLLM inference. See [models.md](../../models.md) for details.
-
-### Grounding Models (Required)
-For optimal performance, we recommend [UI-TARS-1.5-7B](https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B) hosted on Hugging Face Inference Endpoints or another provider. See [Hugging Face Inference Endpoints](https://huggingface.co/learn/cookbook/en/enterprise_dedicated_endpoints) for setup instructions.
-
-## 🚀 Usage
-
-
-> ⚡️ **Recommended Setup:**  
-> For the best configuration, we recommend using **OpenAI gpt-5-2025-08-07** as the main model, paired with **UI-TARS-1.5-7B** for grounding.  
-
-
-### CLI
-
-Note, this is running Agent S3, our improved agent, without bBoN. 
-
-Run Agent S3 with the required parameters:
+**Most accurate setup.** A dedicated grounding model, as in the paper. [UI-TARS-1.5-7B](https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B) on a Hugging Face endpoint, vLLM or Ollama:
 
 ```bash
 agent_s \
-    --provider openai \
-    --model gpt-5-2025-08-07 \
-    --ground_provider huggingface \
-    --ground_url http://localhost:8080 \
-    --ground_model ui-tars-1.5-7b \
-    --grounding_width 1920 \
-    --grounding_height 1080
+    --provider openai --model gpt-5-2025-08-07 \
+    --ground_provider huggingface --ground_url http://localhost:8080 \
+    --ground_model ui-tars-1.5-7b --grounding_width 1920 --grounding_height 1080
 ```
 
-#### Local Coding Environment (Optional)
-For tasks that require code execution (e.g., data processing, file manipulation, system automation), you can enable the local coding environment:
+Dedicated grounding models are trained to answer "where is this element?" with a pixel. General chat models are much weaker at it on hard, dense screens, so for precise clicking keep UI-TARS. Grounding with the main model saves a second server and works well on ordinary screens.
+
+**Fully local.** Both models can run on your machine through any OpenAI-compatible server (vLLM, Ollama, LM Studio, llama.cpp). For example with vLLM serving UI-TARS for grounding and Ollama serving a vision model for planning:
 
 ```bash
+vllm serve ByteDance-Seed/UI-TARS-1.5-7B --port 8000
 agent_s \
-    --provider openai \
-    --model gpt-5-2025-08-07 \
-    --ground_provider huggingface \
-    --ground_url http://localhost:8080 \
-    --ground_model ui-tars-1.5-7b \
-    --grounding_width 1920 \
-    --grounding_height 1080 \
-    --enable_local_env
+    --provider ollama --model qwen2.5vl:7b --model_url http://localhost:11434 \
+    --ground_provider vllm --ground_url http://localhost:8000/v1 \
+    --ground_model ByteDance-Seed/UI-TARS-1.5-7B --grounding_width 1920 --grounding_height 1080
 ```
 
-⚠️ **WARNING**: The local coding environment executes arbitrary Python and Bash code locally on your machine. Only use this feature in trusted environments and with trusted inputs.
+Grounding dimensions must match your grounding model's output resolution: UI-TARS-1.5-7B uses 1920x1080, UI-TARS-72B uses 1000x1000. Without `--ground_provider` they are worked out for you.
 
-#### Required Parameters
-- **`--provider`**: Main generation model provider (e.g., openai, anthropic, etc.) - Default: "openai"
-- **`--model`**: Main generation model name (e.g., gpt-5-2025-08-07) - Default: "gpt-5-2025-08-07"
-- **`--ground_provider`**: The provider for the grounding model - **Required**
-- **`--ground_url`**: The URL of the grounding model - **Required**
-- **`--ground_model`**: The model name for the grounding model - **Required**
-- **`--grounding_width`**: Width of the output coordinate resolution from the grounding model - **Required**
-- **`--grounding_height`**: Height of the output coordinate resolution from the grounding model - **Required**
+Ctrl+C pauses the agent; Ctrl+C again quits, Esc resumes.
 
-#### Optional Parameters
-- **`--model_temperature`**: The temperature to fix all model calls to (necessary to set to 1.0 for models like o3 but can be left blank for other models)
+### Options
 
-#### Grounding Model Dimensions
-The grounding width and height should match the output coordinate resolution of your grounding model:
-- **UI-TARS-1.5-7B**: Use `--grounding_width 1920 --grounding_height 1080`
-- **UI-TARS-72B**: Use `--grounding_width 1000 --grounding_height 1000`
+| Flag | Default | What it does |
+|---|---|---|
+| `--provider`, `--model` | `openai`, `gpt-5-2025-08-07` | Main (planning) model |
+| `--model_url`, `--model_api_key` | | Custom endpoint and key |
+| `--ground_provider`, `--ground_url`, `--ground_model`, `--grounding_width`, `--grounding_height` | unset | Dedicated grounding model. Omit all of them to ground with the main model |
+| `--max_steps` | 15 | Steps before giving up |
+| `--settle` | 0.5 | Seconds to wait after an action before the next screenshot |
+| `--max_trajectory_length` | 3 | Screenshots kept in context |
+| `--image_max_side` | 1280 | Longest side of screenshots sent to the main model (0 = full size) |
+| `--reasoning_effort` | `low` | OpenAI reasoning models (gpt-5, o-series) |
+| `--thinking` | off | Anthropic extended thinking: slower, sometimes more accurate |
+| `--enable_reflection` | off | A second model call per step that checks the trajectory: slower, catches loops |
+| `--model_temperature` | | Fix the temperature (o3 needs 1.0) |
+| `--enable_local_env` | off | Let the code agent run Python and Bash on this computer |
+| `--debug` | off | Debug logging (logs go to `logs/`) |
+| `--task` | | The task; omit for an interactive prompt |
 
-#### Optional Parameters
-- **`--model_url`**: Custom API URL for main generation model - Default: ""
-- **`--model_api_key`**: API key for main generation model - Default: ""
-- **`--ground_api_key`**: API key for grounding model endpoint - Default: ""
-- **`--max_trajectory_length`**: Maximum number of image turns to keep in trajectory - Default: 8
-- **`--enable_reflection`**: Enable reflection agent to assist the worker agent - Default: True
-- **`--enable_local_env`**: Enable local coding environment for code execution (WARNING: Executes arbitrary code locally) - Default: False
+`--enable_local_env` executes arbitrary code with your permissions; Bash snippets time out after 30 seconds and Python after 60. Only use it in a trusted environment.
 
-#### Local Coding Environment Details
-The local coding environment enables Agent S3 to execute Python and Bash code directly on your machine. This is particularly useful for:
+## ⚡ Speed
 
-- **Data Processing**: Manipulating spreadsheets, CSV files, or databases
-- **File Operations**: Bulk file processing, content extraction, or file organization
-- **System Automation**: Configuration changes, system setup, or automation scripts
-- **Code Development**: Writing, editing, or executing code files
-- **Text Processing**: Document manipulation, content editing, or formatting
+Where a step's time goes, and what this version does about each:
 
-When enabled, the agent can use the `call_code_agent` action to execute code blocks for tasks that can be completed through programming rather than GUI interaction.
+| Per step | Before | Now |
+|---|---|---|
+| Planner calls | 1 | 1 |
+| Reflection calls | 1 | 0 (opt-in) |
+| Grounding calls for one click | 2 (the format check grounded the action, then it was grounded again to run it) | 1 |
+| Grounding calls for a drag | 4, one after another | 2, at the same time |
+| Planner output | four paragraphs of analysis | one sentence per section |
+| Fixed sleeps around an action | 2.0s plus pyautogui's 0.1s per call | `--settle` (0.5s), 0.02s per call |
+| Screenshot | PNG, full size to every model | JPEG, encoded once, 1280px to the planner |
+| Screenshots in context | 8 | 3 |
+| API clients | Anthropic client rebuilt on every call | one client per model, reused |
+| Anthropic system prompt | re-read every step | cached |
+| OpenAI reasoning models | default effort | `low` effort |
+| Code agent | one extra model call to summarise each run | none |
 
-**Requirements:**
-- **Python**: The same Python interpreter used to run Agent S3 (automatically detected)
-- **Bash**: Available at `/bin/bash` (standard on macOS and Linux)
-- **System Permissions**: The agent runs with the same permissions as the user executing it
+## `gui_agents` SDK
 
-**Security Considerations:**
-- The local environment executes arbitrary code with the same permissions as the user running the agent
-- Only enable this feature in trusted environments
-- Be cautious when the agent generates code for system-level operations
-- Consider running in a sandboxed environment for untrusted tasks
-- Bash scripts are executed with a 30-second timeout to prevent hanging processes
-
-### `gui_agents` SDK
-
-First, we import the necessary modules. `AgentS3` is the main agent class for Agent S3. `OSWorldACI` is our grounding agent that translates agent actions into executable python code.
 ```python
-import pyautogui
 import io
+import pyautogui
 from gui_agents.s3.agents.agent_s import AgentS3
 from gui_agents.s3.agents.grounding import OSWorldACI
-from gui_agents.s3.utils.local_env import LocalEnv  # Optional: for local coding environment
+from gui_agents.s3.utils.local_env import LocalEnv  # optional, for the code agent
 
-# Load in your API keys.
-from dotenv import load_dotenv
-load_dotenv()
-
-current_platform = "linux"  # "darwin", "windows"
-```
-
-Next, we define our engine parameters. `engine_params` is used for the main agent, and `engine_params_for_grounding` is for grounding. For `engine_params_for_grounding`, we support custom endpoints like HuggingFace TGI, vLLM, and Open Router.
-
-```python
 engine_params = {
-  "engine_type": provider,
-  "model": model,
-  "base_url": model_url,           # Optional
-  "api_key": model_api_key,        # Optional
-  "temperature": model_temperature # Optional
+    "engine_type": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "image_max_side": 1280,  # optional: shrink screenshots for this model
 }
-
-# Load the grounding engine from a custom endpoint
-ground_provider = "<your_ground_provider>"
-ground_url = "<your_ground_url>"
-ground_model = "<your_ground_model>"
-ground_api_key = "<your_ground_api_key>"
-
-# Set grounding dimensions based on your model's output coordinate resolution
-# UI-TARS-1.5-7B: grounding_width=1920, grounding_height=1080
-# UI-TARS-72B: grounding_width=1000, grounding_height=1000
-grounding_width = 1920  # Width of output coordinate resolution
-grounding_height = 1080  # Height of output coordinate resolution
-
+# A dedicated grounding model; or reuse engine_params and give the size of
+# the image the model sees as grounding_width/height.
 engine_params_for_grounding = {
-  "engine_type": ground_provider,
-  "model": ground_model,
-  "base_url": ground_url,
-  "api_key": ground_api_key,  # Optional
-  "grounding_width": grounding_width,
-  "grounding_height": grounding_height,
+    "engine_type": "huggingface",
+    "model": "ui-tars-1.5-7b",
+    "base_url": "http://localhost:8080",
+    "grounding_width": 1920,
+    "grounding_height": 1080,
 }
-```
-
-Then, we define our grounding agent and Agent S3.
-
-```python
-# Optional: Enable local coding environment
-enable_local_env = False  # Set to True to enable local code execution
-local_env = LocalEnv() if enable_local_env else None
 
 grounding_agent = OSWorldACI(
-    env=local_env,  # Pass local_env for code execution capability
-    platform=current_platform,
+    env=None,  # LocalEnv() to enable the code agent
+    platform="linux",  # "darwin", "windows"
     engine_params_for_generation=engine_params,
     engine_params_for_grounding=engine_params_for_grounding,
-    width=1920,  # Optional: screen width
-    height=1080  # Optional: screen height
+    width=1920,
+    height=1080,
 )
+agent = AgentS3(engine_params, grounding_agent, platform="linux")
 
-agent = AgentS3(
-    engine_params,
-    grounding_agent,
-    platform=current_platform,
-    max_trajectory_length=8,  # Optional: maximum image turns to keep
-    enable_reflection=True     # Optional: enable reflection agent
-)
-```
-
-Finally, let's query the agent!
-
-```python
-# Get screenshot.
-screenshot = pyautogui.screenshot()
-buffered = io.BytesIO() 
-screenshot.save(buffered, format="PNG")
-screenshot_bytes = buffered.getvalue()
-
-obs = {
-  "screenshot": screenshot_bytes,
-}
-
-instruction = "Close VS Code"
-info, action = agent.predict(instruction=instruction, observation=obs)
-
+buffer = io.BytesIO()
+pyautogui.screenshot().save(buffer, format="JPEG")
+info, action = agent.predict(instruction="Close VS Code", observation={"screenshot": buffer.getvalue()})
 exec(action[0])
 ```
 
-Refer to [`cli_app.py`](cli_app.py) for more details on how the inference loop works.
+[`cli_app.py`](cli_app.py) has the full loop.
 
-### OSWorld
+## OSWorld
 
-To deploy Agent S3 in OSWorld, follow the [OSWorld Deployment instructions](../../osworld_setup/s3/OSWorld.md).
-
+See the [OSWorld deployment instructions](../../osworld_setup/s3/OSWorld.md).
